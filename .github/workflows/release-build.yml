@@ -38,10 +38,7 @@ jobs:
       TAG: ${{ inputs.tag }}
       ENVIRONMENT: ${{ inputs.environment }}
       REPOSITORY: ${{ github.repository }}
-
-      # Captures the exact branch or tag selected in GitHub
       REF: ${{ github.ref }}
-
       JIRA_URL: https://ranjith-kumar-a.atlassian.net
       CONFIG_REPO: ranjithk0706/github-deployment-config
       CONFIG_FILE: jira-projects.yml
@@ -84,6 +81,12 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install "requests>=2.32,<3" "PyYAML>=6.0,<7"
+
+      - name: Show selected Git ref
+        run: |
+          echo "Selected ref: ${{ github.ref }}"
+          echo "Selected ref name: ${{ github.ref_name }}"
+          echo "Selected ref type: ${{ github.ref_type }}"
 
       - name: Create Jira releases
         env:
