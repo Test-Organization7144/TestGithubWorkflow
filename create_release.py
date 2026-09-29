@@ -34,6 +34,7 @@ def required_env(name: str) -> str:
 
 def load_environment() -> dict[str, str]:
     """Load and validate application environment variables."""
+
     names = (
         "VERSION",
         "TAG",
@@ -45,7 +46,11 @@ def load_environment() -> dict[str, str]:
         "JIRA_API_TOKEN",
     )
 
-    environment = {name: required_env(name) for name in names}
+    environment = {
+        name: required_env(name)
+        for name in names
+    }
+
     environment["JIRA_URL"] = environment["JIRA_URL"].rstrip("/")
 
     return environment
@@ -53,6 +58,7 @@ def load_environment() -> dict[str, str]:
 
 def load_configuration(path: Path) -> dict[str, Any]:
     """Load and validate the Jira project configuration."""
+
     if not path.is_file():
         raise FileNotFoundError(
             f"Configuration file '{path}' was not found."
@@ -81,6 +87,7 @@ def get_repository_config(
     repository: str,
 ) -> dict[str, Any]:
     """Return configuration for a repository."""
+
     repository_config = config[REPOSITORIES_KEY].get(repository)
 
     if repository_config is None:
@@ -90,7 +97,8 @@ def get_repository_config(
 
     if not isinstance(repository_config, dict):
         raise ValueError(
-            f"Configuration for repository '{repository}' must be a mapping."
+            f"Configuration for repository '{repository}' "
+            "must be a mapping."
         )
 
     return repository_config
@@ -101,13 +109,18 @@ def get_jira_projects(
     repository: str,
 ) -> list[str]:
     """Return Jira projects configured for a repository."""
-    repository_config = get_repository_config(config, repository)
+
+    repository_config = get_repository_config(
+        config,
+        repository,
+    )
 
     projects = repository_config.get("jira_projects", [])
 
     if not isinstance(projects, list):
         raise ValueError(
-            f"'jira_projects' for repository '{repository}' must be a list."
+            f"'jira_projects' for repository '{repository}' "
+            "must be a list."
         )
 
     projects = [
@@ -124,13 +137,43 @@ def get_jira_projects(
     return projects
 
 
+def get_workflow(
+    config: dict[str, Any],
+    repository: str,
+) -> str:
+    """Return the deployment workflow configured for a repository."""
+
+    repository_config = get_repository_config(
+        config,
+        repository,
+    )
+
+    workflow = str(
+        repository_config.get("workflow", "")
+    ).strip()
+
+    if not workflow:
+        raise ValueError(
+            f"No 'workflow' configured for repository "
+            f"'{repository}'."
+        )
+
+    return workflow
+
+
 def create_jira_session(
     email: str,
     token: str,
 ) -> requests.Session:
     """Create an authenticated Jira session."""
+
     session = requests.Session()
-    session.auth = HTTPBasicAuth(email, token)
+
+    session.auth = HTTPBasicAuth(
+        email,
+        token,
+    )
+
     session.headers.update(
         {
             "Accept": "application/json",
@@ -149,6 +192,7 @@ def jira_request(
     **kwargs: Any,
 ) -> Response:
     """Execute a Jira request."""
+
     try:
         response = session.request(
             method,
@@ -157,7 +201,10 @@ def jira_request(
             **kwargs,
         )
     except requests.RequestException:
-        LOGGER.exception("%s failed.", operation)
+        LOGGER.exception(
+            "%s failed.",
+            operation,
+        )
         raise
 
     LOGGER.info(
@@ -174,6 +221,7 @@ def log_api_error(
     operation: str,
 ) -> None:
     """Log details from a failed Jira API response."""
+
     LOGGER.error(
         "%s failed with HTTP status %s.",
         operation,
@@ -194,6 +242,7 @@ def json_object(
     operation: str,
 ) -> dict[str, Any]:
     """Return a Jira response as a JSON object."""
+
     try:
         data = response.json()
     except ValueError as exc:
@@ -215,7 +264,10 @@ def get_jira_project(
     project_key: str,
 ) -> dict[str, Any]:
     """Retrieve a Jira project."""
-    operation = f"Jira project lookup for '{project_key}'"
+
+    operation = (
+        f"Jira project lookup for '{project_key}'"
+    )
 
     response = jira_request(
         session,
@@ -225,14 +277,23 @@ def get_jira_project(
     )
 
     if not response.ok:
-        log_api_error(response, operation)
+        log_api_error(
+            response,
+            operation,
+        )
         response.raise_for_status()
 
-    return json_object(response, operation)
+    return json_object(
+        response,
+        operation,
+    )
 
 
-def is_duplicate_version(response: Response) -> bool:
+def is_duplicate_version(
+    response: Response,
+) -> bool:
     """Return whether a response indicates an existing Jira version."""
+
     if response.status_code != 400:
         return False
 
@@ -258,7 +319,10 @@ def create_jira_version(
     description: str,
 ) -> tuple[str, dict[str, Any] | None]:
     """Create a Jira release/version."""
-    operation = f"Jira release creation for '{project_key}'"
+
+    operation = (
+        f"Jira release creation for '{project_key}'"
+    )
 
     response = jira_request(
         session,
@@ -274,7 +338,13 @@ def create_jira_version(
     )
 
     if response.ok:
-        return "created", json_object(response, operation)
+        return (
+            "created",
+            json_object(
+                response,
+                operation,
+            ),
+        )
 
     if is_duplicate_version(response):
         LOGGER.warning(
@@ -283,35 +353,32 @@ def create_jira_version(
             version,
             project_key,
         )
+
         return "exists", None
 
-    log_api_error(response, operation)
+    log_api_error(
+        response,
+        operation,
+    )
+
     response.raise_for_status()
 
-    raise RuntimeError("Unexpected Jira API response.")
-
-
-def get_workflow(
-    config: dict[str, Any],
-    repository: str,
-) -> str:
-    """Return the GitHub deployment workflow configured for a repository."""
-    repository_config = get_repository_config(config, repository)
-    workflow = str(repository_config.get("workflow", "")).strip()
-
-    if not workflow:
-        raise ValueError(
-            f"No 'workflow' is configured for repository '{repository}'."
-        )
-
-    return workflow
+    raise RuntimeError(
+        "Unexpected Jira API response."
+    )
 
 
 def build_release_description(
     environment: dict[str, str],
     workflow: str,
 ) -> str:
-    """Build the Jira release description including the exact GitHub ref."""
+    """
+    Build the Jira release description.
+
+    Format:
+    VERSION_TAG_ENVIRONMENT_REPOSITORY_WORKFLOW_REF
+    """
+
     return "_".join(
         (
             environment["VERSION"],
@@ -332,6 +399,7 @@ def process_project(
     description: str,
 ) -> str:
     """Create a release for one Jira project."""
+
     LOGGER.info(
         "Creating release in Jira project: %s",
         project_key,
@@ -394,20 +462,29 @@ def process_project(
 def log_configuration(
     environment: dict[str, str],
     projects: list[str],
+    workflow: str,
     description: str,
 ) -> None:
     """Log release configuration."""
+
     LOGGER.info(
-        "Release configuration | repository=%s | version=%s | "
-        "tag=%s | environment=%s | workflow=%s | ref=%s | projects=%s",
+        "Release configuration | "
+        "repository=%s | "
+        "version=%s | "
+        "tag=%s | "
+        "environment=%s | "
+        "workflow=%s | "
+        "ref=%s | "
+        "projects=%s",
         environment["REPOSITORY"],
         environment["VERSION"],
         environment["TAG"],
         environment["ENVIRONMENT"],
-        environment.get("WORKFLOW", ""),
+        workflow,
         environment["REF"],
         ", ".join(projects),
     )
+
     LOGGER.info(
         "Release description: %s",
         description,
@@ -416,6 +493,7 @@ def log_configuration(
 
 def main() -> int:
     """Run the Jira release creation process."""
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(levelname)s: %(message)s",
@@ -423,12 +501,16 @@ def main() -> int:
 
     try:
         environment = load_environment()
-        config = load_configuration(CONFIG_FILE)
+
+        config = load_configuration(
+            CONFIG_FILE,
+        )
 
         projects = get_jira_projects(
             config,
             environment["REPOSITORY"],
         )
+
         workflow = get_workflow(
             config,
             environment["REPOSITORY"],
@@ -439,11 +521,10 @@ def main() -> int:
             workflow,
         )
 
-        environment["WORKFLOW"] = workflow
-
         log_configuration(
             environment,
             projects,
+            workflow,
             description,
         )
 
@@ -470,7 +551,8 @@ def main() -> int:
                 existing.append(project)
 
         LOGGER.info(
-            "Release processing completed | created=%s | already_exists=%s",
+            "Release processing completed | "
+            "created=%s | already_exists=%s",
             ", ".join(created) or "None",
             ", ".join(existing) or "None",
         )
@@ -501,7 +583,9 @@ def main() -> int:
         )
 
     except KeyboardInterrupt:
-        LOGGER.error("Process interrupted by user.")
+        LOGGER.error(
+            "Process interrupted by user."
+        )
         return 130
 
     except Exception:
