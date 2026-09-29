@@ -38,8 +38,12 @@ jobs:
       TAG: ${{ inputs.tag }}
       ENVIRONMENT: ${{ inputs.environment }}
       REPOSITORY: ${{ github.repository }}
-      WORKFLOW: deploy.yml
+
+      # Exact branch/tag selected when Run workflow is executed
+      REF: ${{ github.ref }}
+
       JIRA_URL: https://ranjith-kumar-a.atlassian.net
+
       CONFIG_REPO: ranjithk0706/github-deployment-config
       CONFIG_FILE: jira-projects.yml
 
@@ -47,43 +51,31 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # TEMPORARY DEBUG STEP
+      - name: Show selected Git ref
+        run: |
+          echo "========================================"
+          echo "GitHub Ref Information"
+          echo "========================================"
+          echo "Selected ref     : ${{ github.ref }}"
+          echo "Selected ref name: ${{ github.ref_name }}"
+          echo "Selected ref type: ${{ github.ref_type }}"
+          echo "========================================"
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Download Jira project configuration
-        env:
-          CONFIG_REPO_TOKEN: ${{ secrets.CONFIG_REPO_TOKEN }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          [[ -n "${CONFIG_REPO_TOKEN}" ]] || {
-            echo "::error::CONFIG_REPO_TOKEN secret is not configured."
-            exit 1
-          }
-
-          curl \
-            --fail-with-body \
-            --silent \
-            --show-error \
-            --location \
-            --retry 3 \
-            --retry-delay 2 \
-            --header "Authorization: Bearer ${CONFIG_REPO_TOKEN}" \
-            --header "Accept: application/vnd.github.raw+json" \
-            --header "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/${CONFIG_REPO}/contents/${CONFIG_FILE}" \
-            --output "${CONFIG_FILE}"
-
-      - name: Install Python dependencies
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install "requests>=2.32,<3" "PyYAML>=6.0,<7"
+          pip install "requests>=2.32,<3" "PyYAML>=6,<7"
 
-      - name: Create Jira releases
+      - name: Create Jira Release
         env:
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
-        run: python create_release.py
+          CONFIG_REPO_TOKEN: ${{ secrets.CONFIG_REPO_TOKEN }}
+        run: |
+          python create_release.py
