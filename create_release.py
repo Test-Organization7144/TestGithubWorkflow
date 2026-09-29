@@ -29,7 +29,8 @@ def load_environment() -> dict[str, str]:
 
         if not value:
             raise ValueError(
-                f"Required environment variable '{name}' is not set."
+                f"Required environment variable '{name}' "
+                f"is missing or empty."
             )
 
         environment[name] = value
@@ -46,7 +47,9 @@ def load_config(environment: dict[str, str]) -> dict[str, Any]:
     )
 
     headers = {
-        "Authorization": f"Bearer {environment['CONFIG_REPO_TOKEN']}",
+        "Authorization": (
+            f"Bearer {environment['CONFIG_REPO_TOKEN']}"
+        ),
         "Accept": "application/vnd.github+json",
     }
 
@@ -61,7 +64,9 @@ def load_config(environment: dict[str, str]) -> dict[str, Any]:
     config = yaml.safe_load(response.text)
 
     if not isinstance(config, dict):
-        raise ValueError("Invalid Jira configuration file.")
+        raise ValueError(
+            "Invalid Jira configuration file."
+        )
 
     return config
 
@@ -82,7 +87,8 @@ def get_repository_config(
 
     if not isinstance(repository_config, dict):
         raise ValueError(
-            f"No configuration found for repository '{repository}'."
+            f"No configuration found for repository "
+            f"'{repository}'."
         )
 
     return repository_config
@@ -98,7 +104,10 @@ def get_jira_projects(
         repository,
     )
 
-    jira_projects = repository_config.get("jira_projects", [])
+    jira_projects = repository_config.get(
+        "jira_projects",
+        [],
+    )
 
     if not isinstance(jira_projects, list):
         raise ValueError(
@@ -106,14 +115,18 @@ def get_jira_projects(
             f"'{repository}'."
         )
 
-    return [str(project).strip() for project in jira_projects if project]
+    return [
+        str(project).strip()
+        for project in jira_projects
+        if project
+    ]
 
 
 def get_workflow(
     config: dict[str, Any],
     repository: str,
 ) -> str:
-    """Return the GitHub deployment workflow configured for a repository."""
+    """Return deployment workflow configured for the repository."""
     repository_config = get_repository_config(
         config,
         repository,
@@ -140,6 +153,7 @@ def build_release_description(
     Build Jira release description.
 
     Format:
+
     VERSION_TAG_ENVIRONMENT_REPOSITORY_WORKFLOW_REF
     """
     return "_".join(
@@ -162,7 +176,7 @@ def jira_request(
     **kwargs: Any,
 ) -> requests.Response:
     """Make an authenticated Jira REST API request."""
-    response = requests.request(
+    return requests.request(
         method,
         url,
         auth=(email, api_token),
@@ -173,8 +187,6 @@ def jira_request(
         timeout=30,
         **kwargs,
     )
-
-    return response
 
 
 def get_jira_project_id(
@@ -236,20 +248,22 @@ def create_jira_version(
     if response.status_code in (200, 201):
         return True
 
-    # Duplicate version
+    # Duplicate Jira version
     if response.status_code == 400:
         try:
             data = response.json()
         except ValueError:
             data = {}
 
-        error_messages = data.get("errors", {})
+        error_messages = data.get(
+            "errors",
+            {},
+        )
 
         if (
             "name" in error_messages
-            and "already exists" in str(
-                error_messages["name"]
-            ).lower()
+            and "already exists"
+            in str(error_messages["name"]).lower()
         ):
             print(
                 f"WARNING: Jira version '{version_name}' "
@@ -279,11 +293,26 @@ def main() -> None:
         print("========================================")
         print("Jira Release Creation")
         print("========================================")
-        print(f"Version     : {environment['VERSION']}")
-        print(f"Tag         : {environment['TAG']}")
-        print(f"Environment : {environment['ENVIRONMENT']}")
-        print(f"Repository  : {environment['REPOSITORY']}")
-        print(f"Git Ref     : {environment['REF']}")
+        print(
+            f"Version     : "
+            f"{environment['VERSION']}"
+        )
+        print(
+            f"Tag         : "
+            f"{environment['TAG']}"
+        )
+        print(
+            f"Environment : "
+            f"{environment['ENVIRONMENT']}"
+        )
+        print(
+            f"Repository  : "
+            f"{environment['REPOSITORY']}"
+        )
+        print(
+            f"Git Ref     : "
+            f"{environment['REF']}"
+        )
         print("========================================")
 
         config = load_config(environment)
@@ -307,16 +336,18 @@ def main() -> None:
 
         version_name = environment["VERSION"]
 
-        print(f"Workflow    : {workflow}")
-        print(f"Description : {description}")
+        print(
+            f"Workflow    : {workflow}"
+        )
+        print(
+            f"Description : {description}"
+        )
         print("========================================")
-
-        # Keep workflow available in the environment for logging/debugging.
-        environment["WORKFLOW"] = workflow
 
         for project_key in jira_projects:
             print(
-                f"Processing Jira project: {project_key}"
+                f"Processing Jira project: "
+                f"{project_key}"
             )
 
             project_id = get_jira_project_id(
@@ -343,7 +374,8 @@ def main() -> None:
             else:
                 print(
                     f"SKIPPED: Jira version "
-                    f"'{version_name}' already exists in {project_key}"
+                    f"'{version_name}' already exists "
+                    f"in {project_key}"
                 )
 
         print("========================================")
