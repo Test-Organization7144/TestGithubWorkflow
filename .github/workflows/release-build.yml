@@ -38,6 +38,8 @@ jobs:
       TAG: ${{ inputs.tag }}
       ENVIRONMENT: ${{ inputs.environment }}
       REPOSITORY: ${{ github.repository }}
+
+      # Exact branch/tag selected in GitHub Actions
       REF: ${{ github.ref }}
 
       JIRA_URL: https://ranjith-kumar-a.atlassian.net
@@ -58,10 +60,50 @@ jobs:
           echo "Selected ref type: ${{ github.ref_type }}"
           echo "========================================"
 
-      - name: Verify release script
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Download Jira project configuration
+        env:
+          CONFIG_REPO_TOKEN: ${{ secrets.CONFIG_REPO_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          [[ -n "${CONFIG_REPO_TOKEN}" ]] || {
+            echo "::error::CONFIG_REPO_TOKEN secret is not configured."
+            exit 1
+          }
+
+          curl \
+            --fail-with-body \
+            --silent \
+            --show-error \
+            --location \
+            --retry 3 \
+            --retry-delay 2 \
+            --header "Authorization: Bearer ${CONFIG_REPO_TOKEN}" \
+            --header "Accept: application/vnd.github.raw+json" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${CONFIG_REPO}/contents/${CONFIG_FILE}" \
+            --output "${CONFIG_FILE}"
+
+      - name: Verify downloaded Jira configuration
+        shell: bash
         run: |
           echo "========================================"
-          echo "Checking create_release.py"
+          echo "Jira Project Configuration"
+          echo "========================================"
+          cat "${CONFIG_FILE}"
+          echo "========================================"
+
+      - name: Verify release script
+        shell: bash
+        run: |
+          echo "========================================"
+          echo "Release Script Verification"
           echo "========================================"
 
           echo "WORKFLOW references:"
@@ -81,20 +123,13 @@ jobs:
 
           echo "========================================"
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install dependencies
+      - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install "requests>=2.32,<3" "PyYAML>=6,<7"
+          python -m pip install "requests>=2.32,<3" "PyYAML>=6.0,<7"
 
-      - name: Create Jira Release
+      - name: Create Jira releases
         env:
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
-          CONFIG_REPO_TOKEN: ${{ secrets.CONFIG_REPO_TOKEN }}
-        run: |
-          python create_release.py
+        run: python create_release.py
