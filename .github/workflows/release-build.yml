@@ -39,11 +39,10 @@ jobs:
       ENVIRONMENT: ${{ inputs.environment }}
       REPOSITORY: ${{ github.repository }}
 
-      # Exact branch/tag selected when Run workflow is executed
+      # Exact branch/tag selected in "Run workflow"
       REF: ${{ github.ref }}
 
       JIRA_URL: https://ranjith-kumar-a.atlassian.net
-
       CONFIG_REPO: ranjithk0706/github-deployment-config
       CONFIG_FILE: jira-projects.yml
 
@@ -51,7 +50,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # TEMPORARY DEBUG STEP
+      # Temporary diagnostic step
       - name: Show selected Git ref
         run: |
           echo "========================================"
