@@ -38,7 +38,10 @@ jobs:
       TAG: ${{ inputs.tag }}
       ENVIRONMENT: ${{ inputs.environment }}
       REPOSITORY: ${{ github.repository }}
-      WORKFLOW: deploy.yml
+
+      # Captures the exact branch or tag selected in GitHub
+      REF: ${{ github.ref }}
+
       JIRA_URL: https://ranjith-kumar-a.atlassian.net
       CONFIG_REPO: ranjithk0706/github-deployment-config
       CONFIG_FILE: jira-projects.yml
@@ -87,3 +90,4 @@ jobs:
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
         run: python create_release.py
+```
