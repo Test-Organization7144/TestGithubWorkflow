@@ -38,8 +38,6 @@ jobs:
       TAG: ${{ inputs.tag }}
       ENVIRONMENT: ${{ inputs.environment }}
       REPOSITORY: ${{ github.repository }}
-
-      # Exact branch/tag selected in "Run workflow"
       REF: ${{ github.ref }}
 
       JIRA_URL: https://ranjith-kumar-a.atlassian.net
@@ -50,7 +48,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Temporary diagnostic step
       - name: Show selected Git ref
         run: |
           echo "========================================"
@@ -59,6 +56,29 @@ jobs:
           echo "Selected ref     : ${{ github.ref }}"
           echo "Selected ref name: ${{ github.ref_name }}"
           echo "Selected ref type: ${{ github.ref_type }}"
+          echo "========================================"
+
+      - name: Verify release script
+        run: |
+          echo "========================================"
+          echo "Checking create_release.py"
+          echo "========================================"
+
+          echo "WORKFLOW references:"
+          grep -n "WORKFLOW" create_release.py || true
+
+          echo ""
+          echo "REF references:"
+          grep -n "REF" create_release.py || true
+
+          echo ""
+          echo "Environment values:"
+          echo "VERSION     = ${VERSION}"
+          echo "TAG         = ${TAG}"
+          echo "ENVIRONMENT = ${ENVIRONMENT}"
+          echo "REPOSITORY  = ${REPOSITORY}"
+          echo "REF         = ${REF}"
+
           echo "========================================"
 
       - name: Set up Python
