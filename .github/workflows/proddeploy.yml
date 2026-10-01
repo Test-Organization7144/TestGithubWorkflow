@@ -1,4 +1,4 @@
-name: UAT Deployment
+name: PROD Deployment
 
 on:
   workflow_dispatch:
@@ -26,5 +26,5 @@ jobs:
           echo "Repository: ${{ github.repository }}"
           echo "Workflow: ${{ github.workflow }}"
           echo "================================"
-          echo "This is UAT Deployment"
+          echo "This is Prod Deployment"
           
