@@ -40,7 +40,6 @@ def load_environment() -> dict[str, str]:
         "TAG",
         "ENVIRONMENT",
         "REPOSITORY",
-        "REF",
         "JIRA_URL",
         "JIRA_EMAIL",
         "JIRA_API_TOKEN",
@@ -137,28 +136,42 @@ def get_jira_projects(
     return projects
 
 
-def get_workflow(
+def get_workflows(
     config: dict[str, Any],
     repository: str,
-) -> str:
-    """Return the deployment workflow configured for a repository."""
+) -> dict[str, str]:
+    """Return deployment workflows configured for all environments."""
 
     repository_config = get_repository_config(
         config,
         repository,
     )
 
-    workflow = str(
-        repository_config.get("workflow", "")
-    ).strip()
+    workflows = repository_config.get("workflows")
 
-    if not workflow:
+    if not isinstance(workflows, dict):
         raise ValueError(
-            f"No 'workflow' configured for repository "
-            f"'{repository}'."
+            f"'workflows' for repository '{repository}' "
+            "must be a mapping."
         )
 
-    return workflow
+    required_environments = ("dev", "uat", "prod")
+    result: dict[str, str] = {}
+
+    for environment in required_environments:
+        workflow = str(
+            workflows.get(environment, "")
+        ).strip()
+
+        if not workflow:
+            raise ValueError(
+                f"No workflow configured for environment '{environment}' "
+                f"for repository '{repository}'."
+            )
+
+        result[environment] = workflow
+
+    return result
 
 
 def create_jira_session(
@@ -370,13 +383,15 @@ def create_jira_version(
 
 def build_release_description(
     environment: dict[str, str],
-    workflow: str,
+    workflows: dict[str, str],
 ) -> str:
     """
     Build the Jira release description.
 
+    One Jira release contains the deployment workflow for each environment.
+
     Format:
-    VERSION_TAG_ENVIRONMENT_REPOSITORY_WORKFLOW_REF
+    VERSION_TAG_ENVIRONMENT_REPOSITORY_DEV_WORKFLOW_UAT_WORKFLOW_PROD_WORKFLOW
     """
 
     return "_".join(
@@ -385,8 +400,9 @@ def build_release_description(
             environment["TAG"],
             environment["ENVIRONMENT"],
             environment["REPOSITORY"],
-            workflow,
-            environment["REF"],
+            workflows["dev"],
+            workflows["uat"],
+            workflows["prod"],
         )
     )
 
@@ -462,7 +478,7 @@ def process_project(
 def log_configuration(
     environment: dict[str, str],
     projects: list[str],
-    workflow: str,
+    workflows: dict[str, str],
     description: str,
 ) -> None:
     """Log release configuration."""
@@ -473,15 +489,17 @@ def log_configuration(
         "version=%s | "
         "tag=%s | "
         "environment=%s | "
-        "workflow=%s | "
-        "ref=%s | "
+        "dev_workflow=%s | "
+        "uat_workflow=%s | "
+        "prod_workflow=%s | "
         "projects=%s",
         environment["REPOSITORY"],
         environment["VERSION"],
         environment["TAG"],
         environment["ENVIRONMENT"],
-        workflow,
-        environment["REF"],
+        workflows["dev"],
+        workflows["uat"],
+        workflows["prod"],
         ", ".join(projects),
     )
 
@@ -511,20 +529,20 @@ def main() -> int:
             environment["REPOSITORY"],
         )
 
-        workflow = get_workflow(
+        workflows = get_workflows(
             config,
             environment["REPOSITORY"],
         )
 
         description = build_release_description(
             environment,
-            workflow,
+            workflows,
         )
 
         log_configuration(
             environment,
             projects,
-            workflow,
+            workflows,
             description,
         )
 
