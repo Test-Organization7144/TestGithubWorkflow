@@ -1,410 +1,149 @@
-"""Create Jira releases for configured GitHub repositories."""
+"""Create Jira releases from the central GitHub deployment configuration."""
 
 from __future__ import annotations
 
+import base64
 import logging
 import os
 import sys
-from pathlib import Path
 from typing import Any
 
 import requests
 import yaml
-from requests import Response
-from requests.auth import HTTPBasicAuth
-
-CONFIG_FILE = Path("jira-projects.yml")
-REQUEST_TIMEOUT = 30
-REPOSITORIES_KEY = "repositories"
 
 LOGGER = logging.getLogger(__name__)
-
-
-def required_env(name: str) -> str:
-    """Return a required environment variable."""
-    value = os.getenv(name, "").strip()
-
-    if not value:
-        raise ValueError(
-            f"Required environment variable '{name}' is missing or empty."
-        )
-
-    return value
+CONFIG_FILE = os.getenv("CONFIG_FILE", "jira-projects.yml")
 
 
 def load_environment() -> dict[str, str]:
-    """Load and validate application environment variables."""
-
-    names = (
-        "VERSION",
-        "TAG",
-        "ENVIRONMENT",
-        "REPOSITORY",
-        "JIRA_URL",
-        "JIRA_EMAIL",
-        "JIRA_API_TOKEN",
-    )
-
-    environment = {
-        name: required_env(name)
-        for name in names
+    required = {
+        "VERSION": os.getenv("VERSION"),
+        "TAG": os.getenv("TAG"),
+        "REPOSITORY": os.getenv("REPOSITORY"),
+        "REF": os.getenv("REF"),
+        "JIRA_URL": os.getenv("JIRA_URL"),
+        "JIRA_EMAIL": os.getenv("JIRA_EMAIL"),
+        "JIRA_API_TOKEN": os.getenv("JIRA_API_TOKEN"),
     }
 
-    environment["JIRA_URL"] = environment["JIRA_URL"].rstrip("/")
-
-    return environment
-
-
-def load_configuration(path: Path) -> dict[str, Any]:
-    """Load and validate the Jira project configuration."""
-
-    if not path.is_file():
-        raise FileNotFoundError(
-            f"Configuration file '{path}' was not found."
-        )
-
-    with path.open(encoding="utf-8") as file:
-        config = yaml.safe_load(file)
-
-    if not isinstance(config, dict):
+    missing = [name for name, value in required.items() if not value]
+    if missing:
         raise ValueError(
-            f"Configuration file '{path}' must contain a YAML mapping."
+            "Missing required environment variables: " + ", ".join(missing)
         )
 
-    repositories = config.get(REPOSITORIES_KEY)
+    return {name: str(value) for name, value in required.items()}
 
+
+def load_configuration(path: str) -> dict[str, Any]:
+    with open(path, "r", encoding="utf-8") as file:
+        data = yaml.safe_load(file) or {}
+
+    if not isinstance(data, dict):
+        raise ValueError("The Jira configuration must contain a YAML object.")
+
+    repositories = data.get("repositories")
     if not isinstance(repositories, dict):
-        raise ValueError(
-            f"'{REPOSITORIES_KEY}' must be a mapping in '{path}'."
-        )
+        raise ValueError("The Jira configuration must contain 'repositories'.")
 
-    return config
+    return data
 
 
-def get_repository_config(
-    config: dict[str, Any],
-    repository: str,
-) -> dict[str, Any]:
-    """Return configuration for a repository."""
-
-    repository_config = config[REPOSITORIES_KEY].get(repository)
-
-    if repository_config is None:
-        raise ValueError(
-            f"Repository '{repository}' is not configured."
-        )
+def get_repository_config(config: dict[str, Any], repository: str) -> dict[str, Any]:
+    repositories = config.get("repositories", {})
+    repository_config = repositories.get(repository)
 
     if not isinstance(repository_config, dict):
         raise ValueError(
-            f"Configuration for repository '{repository}' "
-            "must be a mapping."
+            f"No configuration found for repository '{repository}'."
         )
 
     return repository_config
 
 
-def get_jira_projects(
-    config: dict[str, Any],
-    repository: str,
-) -> list[str]:
-    """Return Jira projects configured for a repository."""
+def get_jira_projects(config: dict[str, Any], repository: str) -> list[str]:
+    repository_config = get_repository_config(config, repository)
+    projects = repository_config.get("jira_projects")
 
-    repository_config = get_repository_config(
-        config,
-        repository,
-    )
-
-    projects = repository_config.get("jira_projects", [])
-
-    if not isinstance(projects, list):
+    if not isinstance(projects, list) or not projects:
         raise ValueError(
-            f"'jira_projects' for repository '{repository}' "
-            "must be a list."
+            f"No Jira projects configured for repository '{repository}'."
         )
 
-    projects = [
-        str(project).strip()
-        for project in projects
-        if str(project).strip()
-    ]
-
-    if not projects:
-        raise ValueError(
-            f"No Jira projects configured for '{repository}'."
-        )
-
-    return projects
+    return [str(project).strip() for project in projects if str(project).strip()]
 
 
-def get_workflows(
-    config: dict[str, Any],
-    repository: str,
-) -> dict[str, str]:
-    """Return deployment workflows configured for all environments."""
+def get_workflows(config: dict[str, Any], repository: str) -> dict[str, str]:
+    """Return all configured environment/workflow pairs.
 
-    repository_config = get_repository_config(
-        config,
-        repository,
-    )
-
+    Environment keys are optional. A repository may have any combination of
+    dev, uat, prod, or other environment names.
+    """
+    repository_config = get_repository_config(config, repository)
     workflows = repository_config.get("workflows")
 
-    if not isinstance(workflows, dict):
+    if not isinstance(workflows, dict) or not workflows:
         raise ValueError(
-            f"'workflows' for repository '{repository}' "
-            "must be a mapping."
+            f"No workflows configured for repository '{repository}'."
         )
 
-    required_environments = ("dev", "uat", "prod")
     result: dict[str, str] = {}
+    for environment_name, workflow in workflows.items():
+        environment = str(environment_name).strip().lower()
+        workflow_name = str(workflow).strip()
 
-    for environment in required_environments:
-        workflow = str(
-            workflows.get(environment, "")
-        ).strip()
+        if not environment or not workflow_name:
+            continue
 
-        if not workflow:
-            raise ValueError(
-                f"No workflow configured for environment '{environment}' "
-                f"for repository '{repository}'."
-            )
+        result[environment] = workflow_name
 
-        result[environment] = workflow
+    if not result:
+        raise ValueError(
+            f"No valid workflows configured for repository '{repository}'."
+        )
 
     return result
-
-
-def create_jira_session(
-    email: str,
-    token: str,
-) -> requests.Session:
-    """Create an authenticated Jira session."""
-
-    session = requests.Session()
-
-    session.auth = HTTPBasicAuth(
-        email,
-        token,
-    )
-
-    session.headers.update(
-        {
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-        }
-    )
-
-    return session
-
-
-def jira_request(
-    session: requests.Session,
-    method: str,
-    url: str,
-    operation: str,
-    **kwargs: Any,
-) -> Response:
-    """Execute a Jira request."""
-
-    try:
-        response = session.request(
-            method,
-            url,
-            timeout=REQUEST_TIMEOUT,
-            **kwargs,
-        )
-    except requests.RequestException:
-        LOGGER.exception(
-            "%s failed.",
-            operation,
-        )
-        raise
-
-    LOGGER.info(
-        "%s status: %s",
-        operation,
-        response.status_code,
-    )
-
-    return response
-
-
-def log_api_error(
-    response: Response,
-    operation: str,
-) -> None:
-    """Log details from a failed Jira API response."""
-
-    LOGGER.error(
-        "%s failed with HTTP status %s.",
-        operation,
-        response.status_code,
-    )
-
-    response_text = response.text.strip()
-
-    if response_text:
-        LOGGER.error(
-            "Jira API response: %s",
-            response_text,
-        )
-
-
-def json_object(
-    response: Response,
-    operation: str,
-) -> dict[str, Any]:
-    """Return a Jira response as a JSON object."""
-
-    try:
-        data = response.json()
-    except ValueError as exc:
-        raise ValueError(
-            f"Invalid JSON returned by {operation}."
-        ) from exc
-
-    if not isinstance(data, dict):
-        raise ValueError(
-            f"Unexpected response returned by {operation}."
-        )
-
-    return data
-
-
-def get_jira_project(
-    session: requests.Session,
-    jira_url: str,
-    project_key: str,
-) -> dict[str, Any]:
-    """Retrieve a Jira project."""
-
-    operation = (
-        f"Jira project lookup for '{project_key}'"
-    )
-
-    response = jira_request(
-        session,
-        "GET",
-        f"{jira_url}/rest/api/3/project/{project_key}",
-        operation,
-    )
-
-    if not response.ok:
-        log_api_error(
-            response,
-            operation,
-        )
-        response.raise_for_status()
-
-    return json_object(
-        response,
-        operation,
-    )
-
-
-def is_duplicate_version(
-    response: Response,
-) -> bool:
-    """Return whether a response indicates an existing Jira version."""
-
-    if response.status_code != 400:
-        return False
-
-    response_text = response.text.lower()
-
-    return any(
-        indicator in response_text
-        for indicator in (
-            "already exists",
-            "version already exists",
-            "a version with this name already exists",
-            "name already exists",
-        )
-    )
-
-
-def create_jira_version(
-    session: requests.Session,
-    jira_url: str,
-    project_id: int,
-    project_key: str,
-    version: str,
-    description: str,
-) -> tuple[str, dict[str, Any] | None]:
-    """Create a Jira release/version."""
-
-    operation = (
-        f"Jira release creation for '{project_key}'"
-    )
-
-    response = jira_request(
-        session,
-        "POST",
-        f"{jira_url}/rest/api/3/version",
-        operation,
-        json={
-            "name": version,
-            "description": description,
-            "projectId": project_id,
-            "released": False,
-        },
-    )
-
-    if response.ok:
-        return (
-            "created",
-            json_object(
-                response,
-                operation,
-            ),
-        )
-
-    if is_duplicate_version(response):
-        LOGGER.warning(
-            "Release '%s' already exists in Jira project '%s'. "
-            "Skipping this project and continuing.",
-            version,
-            project_key,
-        )
-
-        return "exists", None
-
-    log_api_error(
-        response,
-        operation,
-    )
-
-    response.raise_for_status()
-
-    raise RuntimeError(
-        "Unexpected Jira API response."
-    )
 
 
 def build_release_description(
     environment: dict[str, str],
     workflows: dict[str, str],
 ) -> str:
-    """
-    Build the Jira release description.
-
-    One Jira release contains the deployment workflow for each environment.
+    """Build a flexible release description.
 
     Format:
-    VERSION_TAG_ENVIRONMENT_REPOSITORY_DEV_WORKFLOW_UAT_WORKFLOW_PROD_WORKFLOW
+      VERSION_TAG_REPOSITORY_ENV=WORKFLOW_ENV=WORKFLOW_REF=REF
+
+    Example with all environments:
+      1.0.1_v1.0.1_org/repo_dev=testdeploy.yml_uat=uatdeploy.yml_prod=proddeploy.yml_ref=main
+
+    Example with only UAT/PROD:
+      1.0.1_v1.0.1_org/repo_uat=uatdeploy.yml_prod=proddeploy.yml_ref=main
     """
+    workflow_parts = [
+        f"{name}={workflows[name]}"
+        for name in sorted(workflows)
+    ]
 
     return "_".join(
-        (
+        [
             environment["VERSION"],
             environment["TAG"],
-            environment["ENVIRONMENT"],
             environment["REPOSITORY"],
-            workflows["dev"],
-            workflows["uat"],
-            workflows["prod"],
-        )
+            *workflow_parts,
+            f"ref={environment['REF']}",
+        ]
     )
+
+
+def create_jira_session(email: str, api_token: str) -> requests.Session:
+    session = requests.Session()
+    session.auth = (email, api_token)
+    session.headers.update({
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    })
+    return session
 
 
 def process_project(
@@ -414,56 +153,31 @@ def process_project(
     version: str,
     description: str,
 ) -> str:
-    """Create a release for one Jira project."""
+    url = f"{jira_url.rstrip('/')}/rest/api/3/project/{project_key}/versions"
 
-    LOGGER.info(
-        "Creating release in Jira project: %s",
-        project_key,
-    )
+    response = session.get(url, timeout=30)
+    response.raise_for_status()
+    versions = response.json()
 
-    project = get_jira_project(
-        session,
-        jira_url,
-        project_key,
-    )
+    for existing in versions:
+        if existing.get("name") == version:
+            LOGGER.warning(
+                "Jira version already exists | project: %s | version: %s | continuing",
+                project_key,
+                version,
+            )
+            return "existing"
 
-    try:
-        project_id = int(project["id"])
-    except KeyError as exc:
-        raise ValueError(
-            f"Jira project '{project_key}' response does not contain "
-            "a project ID."
-        ) from exc
-    except (TypeError, ValueError) as exc:
-        raise ValueError(
-            f"Invalid Jira project ID '{project.get('id')}' "
-            f"for project '{project_key}'."
-        ) from exc
+    payload = {
+        "description": description,
+        "name": version,
+        "project": project_key,
+        "released": False,
+    }
 
-    LOGGER.info(
-        "Jira project: %s | key: %s | ID: %s",
-        project.get("name", "Unknown"),
-        project.get("key", project_key),
-        project_id,
-    )
-
-    status, release = create_jira_version(
-        session=session,
-        jira_url=jira_url,
-        project_id=project_id,
-        project_key=project_key,
-        version=version,
-        description=description,
-    )
-
-    if status == "exists":
-        return status
-
-    if release is None:
-        raise ValueError(
-            f"Jira release response for project '{project_key}' "
-            "did not contain release data."
-        )
+    response = session.post(url, json=payload, timeout=30)
+    response.raise_for_status()
+    release = response.json()
 
     LOGGER.info(
         "Release created successfully | project: %s | name: %s | ID: %s",
@@ -481,70 +195,33 @@ def log_configuration(
     workflows: dict[str, str],
     description: str,
 ) -> None:
-    """Log release configuration."""
-
     LOGGER.info(
-        "Release configuration | "
-        "repository=%s | "
-        "version=%s | "
-        "tag=%s | "
-        "environment=%s | "
-        "dev_workflow=%s | "
-        "uat_workflow=%s | "
-        "prod_workflow=%s | "
-        "projects=%s",
+        "Release configuration | repository=%s | version=%s | tag=%s | ref=%s | projects=%s",
         environment["REPOSITORY"],
         environment["VERSION"],
         environment["TAG"],
-        environment["ENVIRONMENT"],
-        workflows["dev"],
-        workflows["uat"],
-        workflows["prod"],
+        environment["REF"],
         ", ".join(projects),
     )
 
     LOGGER.info(
-        "Release description: %s",
-        description,
+        "Configured workflows: %s",
+        ", ".join(f"{name}={workflow}" for name, workflow in sorted(workflows.items())),
     )
+    LOGGER.info("Release description: %s", description)
 
 
 def main() -> int:
-    """Run the Jira release creation process."""
-
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(levelname)s: %(message)s",
-    )
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
     try:
         environment = load_environment()
+        config = load_configuration(CONFIG_FILE)
+        projects = get_jira_projects(config, environment["REPOSITORY"])
+        workflows = get_workflows(config, environment["REPOSITORY"])
+        description = build_release_description(environment, workflows)
 
-        config = load_configuration(
-            CONFIG_FILE,
-        )
-
-        projects = get_jira_projects(
-            config,
-            environment["REPOSITORY"],
-        )
-
-        workflows = get_workflows(
-            config,
-            environment["REPOSITORY"],
-        )
-
-        description = build_release_description(
-            environment,
-            workflows,
-        )
-
-        log_configuration(
-            environment,
-            projects,
-            workflows,
-            description,
-        )
+        log_configuration(environment, projects, workflows, description)
 
         session = create_jira_session(
             environment["JIRA_EMAIL"],
@@ -562,54 +239,33 @@ def main() -> int:
                 environment["VERSION"],
                 description,
             )
-
             if status == "created":
                 created.append(project)
             else:
                 existing.append(project)
 
         LOGGER.info(
-            "Release processing completed | "
-            "created=%s | already_exists=%s",
+            "Release processing completed | created=%s | already_exists=%s",
             ", ".join(created) or "None",
             ", ".join(existing) or "None",
         )
-
         return 0
 
     except FileNotFoundError as exc:
         LOGGER.error("%s", exc)
-
     except ValueError as exc:
         LOGGER.error("%s", exc)
-
     except yaml.YAMLError:
-        LOGGER.error(
-            "The central Jira configuration contains invalid YAML."
-        )
-
+        LOGGER.error("The central Jira configuration contains invalid YAML.")
     except requests.HTTPError as exc:
-        LOGGER.error(
-            "Jira API request failed: %s",
-            exc,
-        )
-
+        LOGGER.error("Jira API request failed: %s", exc)
     except requests.RequestException as exc:
-        LOGGER.error(
-            "Jira API connection failed: %s",
-            exc,
-        )
-
+        LOGGER.error("Jira API connection failed: %s", exc)
     except KeyboardInterrupt:
-        LOGGER.error(
-            "Process interrupted by user."
-        )
+        LOGGER.error("Process interrupted by user.")
         return 130
-
     except Exception:
-        LOGGER.exception(
-            "Unexpected error while creating Jira releases."
-        )
+        LOGGER.exception("Unexpected error while creating Jira releases.")
 
     return 1
 
