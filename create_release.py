@@ -151,8 +151,8 @@ def get_workflows(
           uat: uatdeploy.yml
           prod: proddeploy.yml
 
-    The environments are completely dynamic. A repository can
-    have any subset of environments.
+    Environments are completely dynamic.
+    A repository can have any subset of environments.
     """
 
     repository_config = get_repository_config(
@@ -351,14 +351,9 @@ def create_jira_version(
     """
     Create a Jira release/version.
 
-    IMPORTANT:
-    Jira Cloud uses:
+    Jira Cloud endpoint:
 
         POST /rest/api/3/version
-
-    Do NOT use:
-
-        /rest/api/3/project/{project_key}/versions
     """
 
     operation = (
@@ -421,37 +416,34 @@ def build_release_description(
     workflows: dict[str, str],
 ) -> str:
     """
-    Build the Jira release description.
+    Build the Jira release description using key/value pairs.
 
     Format:
 
-    VERSION_TAG_REPOSITORY_environment=workflow_..._ref=REF
+        version=VERSION|tag=TAG|repository=REPOSITORY|workflows=ENV:WORKFLOW,...|ref=REF
 
     Examples:
 
-    1.0.0_v1.0.0_repo_dev=devdeploy.yml_uat=uatdeploy.yml_prod=proddeploy.yml_ref=main
+        version=1.0.0|tag=v1.0.0|repository=ranjithk0706/TestGithubWorkflow|workflows=prod:proddeploy.yml,uat:uatdeploy.yml|ref=main
 
-    1.0.0_v1.0.0_repo_uat=uatdeploy.yml_prod=proddeploy.yml_ref=main
+        version=1.0.0|tag=v1.0.0|repository=ranjithk0706/TestGithubWorkflow_Rep2|workflows=prod:proddeploy.yml|ref=release/1.0.0
 
-    1.0.0_v1.0.0_repo_prod=proddeploy.yml_ref=release/1.0.0
+        version=1.0.0|tag=v1.0.0|repository=ranjithk0706/TestGithubWorkflow|workflows=uat:uatdeploy.yml|ref=v1.0.0
     """
 
-    parts = [
-        environment["VERSION"],
-        environment["TAG"],
-        environment["REPOSITORY"],
-    ]
-
-    for environment_name, workflow in sorted(workflows.items()):
-        parts.append(
-            f"{environment_name}={workflow}"
-        )
-
-    parts.append(
-        f"ref={environment['REF']}"
+    workflow_text = ",".join(
+        f"{environment_name}:{workflow}"
+        for environment_name, workflow
+        in sorted(workflows.items())
     )
 
-    return "_".join(parts)
+    return (
+        f"version={environment['VERSION']}"
+        f"|tag={environment['TAG']}"
+        f"|repository={environment['REPOSITORY']}"
+        f"|workflows={workflow_text}"
+        f"|ref={environment['REF']}"
+    )
 
 
 def process_project(
