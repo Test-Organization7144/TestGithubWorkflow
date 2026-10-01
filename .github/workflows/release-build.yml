@@ -15,12 +15,6 @@ on:
         type: string
         default: v1.0.0
 
-      environment:
-        description: Deployment environment
-        required: true
-        type: string
-        default: test
-
 permissions:
   contents: read
 
@@ -36,8 +30,11 @@ jobs:
     env:
       VERSION: ${{ inputs.version }}
       TAG: ${{ inputs.tag }}
-      ENVIRONMENT: ${{ inputs.environment }}
       REPOSITORY: ${{ github.repository }}
+
+      # Branch/tag selected in the GitHub Actions Run workflow screen.
+      # Examples: main, release/1.0.1, v1.0.1
+      REF: ${{ github.ref_name }}
 
       JIRA_URL: https://ranjith-kumar-a.atlassian.net
       CONFIG_REPO: ranjithk0706/github-deployment-config
@@ -46,6 +43,17 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Show selected Git ref
+        run: |
+          echo "========================================"
+          echo "GitHub Ref Information"
+          echo "========================================"
+          echo "Selected ref     : ${{ github.ref }}"
+          echo "Selected ref name: ${{ github.ref_name }}"
+          echo "Selected ref type: ${{ github.ref_type }}"
+          echo "Release REF      : ${REF}"
+          echo "========================================"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -84,21 +92,6 @@ jobs:
           echo "Jira Project Configuration"
           echo "========================================"
           cat "${CONFIG_FILE}"
-          echo "========================================"
-
-      - name: Verify release script
-        shell: bash
-        run: |
-          echo "========================================"
-          echo "Release Script Verification"
-          echo "========================================"
-
-          echo "Environment values:"
-          echo "VERSION     = ${VERSION}"
-          echo "TAG         = ${TAG}"
-          echo "ENVIRONMENT = ${ENVIRONMENT}"
-          echo "REPOSITORY  = ${REPOSITORY}"
-
           echo "========================================"
 
       - name: Install Python dependencies
