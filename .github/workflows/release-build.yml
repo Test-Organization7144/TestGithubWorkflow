@@ -82,15 +82,14 @@ jobs:
       # ---------------------------------------------------------------
       # 3. Validate deployment REF
       #
-      # This does not require the ref to be the same as the workflow
-      # source. It supports:
+      # Supports:
       #
       #   main
       #   develop
       #   release/1.0.0
       #   v1.0.0
       #
-      # The actual validation is performed against the GitHub repository.
+      # The deployment REF is independent from the workflow source.
       # ---------------------------------------------------------------
 
       - name: Validate deployment REF
@@ -152,16 +151,29 @@ jobs:
       # ---------------------------------------------------------------
       # 6. Create Jira releases
       #
-      # GITHUB_TOKEN is used to read repository Custom Properties.
+      # GitHub Custom Properties are read by create_release.py.
       #
-      # create_release.py reads:
+      # Required:
       #
       #   jira_projects
       #   workflow
       #
-      # from:
+      # Optional:
       #
-      #   /repos/{owner}/{repo}/properties/values
+      #   deployment_type
+      #
+      # If deployment_type is not configured, the script defaults
+      # to "direct" so existing repositories continue to work.
+      #
+      # Direct example:
+      #
+      #   deployment_type = direct
+      #   workflow = uat=uatdeploy.yml|prod=proddeploy.yml
+      #
+      # Template example:
+      #
+      #   deployment_type = template
+      #   workflow = dev=non-prod.yml|test=non-prod.yml|uat=non-prod.yml
       # ---------------------------------------------------------------
 
       - name: Create Jira releases
