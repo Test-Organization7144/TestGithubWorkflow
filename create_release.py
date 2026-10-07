@@ -18,7 +18,15 @@ GITHUB_API_BASE = "https://api.github.com"
 GITHUB_API_VERSION = "2022-11-28"
 
 JIRA_PROJECTS_PROPERTY = "jira_projects"
-WORKFLOWS_PROPERTY = "workflows"
+
+# Current GitHub Custom Property name:
+#     workflow
+#
+# "workflows" is also supported for backward compatibility.
+WORKFLOW_PROPERTY_NAMES = (
+    "workflow",
+    "workflows",
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -387,9 +395,13 @@ def get_workflows(
     """
     Read deployment workflows from the GitHub custom property.
 
-    Expected:
+    Current property name:
 
-        workflows = uat=uatdeploy.yml|prod=proddeploy.yml
+        workflow
+
+    Example:
+
+        workflow = uat=uatdeploy.yml|prod=proddeploy.yml
 
     Result:
 
@@ -400,22 +412,70 @@ def get_workflows(
 
     A single direct workflow is also supported:
 
-        workflows = deploy1.yml
+        workflow = deploy1.yml
 
     Result:
 
         {
             "default": "deploy1.yml"
         }
+
+    For backward compatibility, the property name "workflows"
+    is also accepted.
     """
 
-    value = get_property_value(
-        properties,
-        WORKFLOWS_PROPERTY,
-        repository,
+    # ---------------------------------------------------------------
+    # Find the workflow property.
+    #
+    # Preferred/current name:
+    #
+    #     workflow
+    #
+    # Backward-compatible name:
+    #
+    #     workflows
+    # ---------------------------------------------------------------
+
+    property_name: str | None = None
+
+    for candidate in WORKFLOW_PROPERTY_NAMES:
+        if candidate in properties:
+            property_name = candidate
+            break
+
+    if property_name is None:
+        raise ValueError(
+            "GitHub custom property 'workflow' is not configured "
+            f"for repository '{repository}'. "
+            "Expected property name: 'workflow'."
+        )
+
+    value = properties[property_name]
+
+    if value is None:
+        raise ValueError(
+            f"GitHub custom property '{property_name}' "
+            f"for repository '{repository}' is empty."
+        )
+
+    LOGGER.info(
+        "Using GitHub workflow custom property: %s",
+        property_name,
     )
 
+    # ---------------------------------------------------------------
+    # Handle list values defensively.
+    #
+    # Example:
+    #
+    # [
+    #     "uat=uatdeploy.yml",
+    #     "prod=proddeploy.yml"
+    # ]
+    # ---------------------------------------------------------------
+
     if isinstance(value, list):
+
         value = "|".join(
             str(item).strip()
             for item in value
@@ -426,16 +486,18 @@ def get_workflows(
 
     if not value:
         raise ValueError(
-            f"GitHub custom property '{WORKFLOWS_PROPERTY}' "
+            f"GitHub custom property '{property_name}' "
             f"for repository '{repository}' is empty."
         )
 
     result: dict[str, str] = {}
 
+    # ---------------------------------------------------------------
     # Environment-specific format:
     #
     # uat=uatdeploy.yml|prod=proddeploy.yml
-    #
+    # ---------------------------------------------------------------
+
     if "=" in value:
 
         mappings = value.split("|")
@@ -456,7 +518,10 @@ def get_workflows(
                 )
                 continue
 
-            environment, workflow = mapping.split("=", 1)
+            environment, workflow = mapping.split(
+                "=",
+                1,
+            )
 
             environment = environment.strip().lower()
             workflow = workflow.strip()
@@ -480,10 +545,12 @@ def get_workflows(
 
             result[environment] = workflow
 
+    # ---------------------------------------------------------------
     # Single workflow format:
     #
     # deploy1.yml
-    #
+    # ---------------------------------------------------------------
+
     else:
 
         result["default"] = value
@@ -491,7 +558,7 @@ def get_workflows(
     if not result:
         raise ValueError(
             f"No valid deployment workflows configured in custom "
-            f"property '{WORKFLOWS_PROPERTY}' for repository "
+            f"property '{property_name}' for repository "
             f"'{repository}'."
         )
 
