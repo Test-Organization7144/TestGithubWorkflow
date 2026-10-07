@@ -73,6 +73,57 @@ def load_environment() -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
+# Release reference validation
+# ---------------------------------------------------------------------------
+
+def validate_release_reference(
+    environment: dict[str, str],
+) -> None:
+    """
+    Validate the release reference.
+
+    The release TAG is the source of truth for the Jira deployment REF.
+
+    Expected:
+
+        TAG = v1.2.0
+        REF = v1.2.0
+
+    The workflow execution ref can still be different.
+
+    Example 1 - new release:
+
+        Workflow execution ref = v1.2.0
+        TAG                    = v1.2.0
+        REF                    = v1.2.0
+
+    Example 2 - existing release:
+
+        Workflow execution ref = main
+        TAG                    = v1.0.0
+        REF                    = v1.0.0
+
+    This function intentionally does not inspect github.ref_name because
+    the workflow may be executed from main for an existing release tag.
+    """
+
+    tag = environment["TAG"]
+    ref = environment["REF"]
+
+    if tag != ref:
+        raise ValueError(
+            "Release REF must match TAG. "
+            f"Received TAG='{tag}' and REF='{ref}'. "
+            "For release creation, use the release tag as REF."
+        )
+
+    LOGGER.info(
+        "Release reference validated: REF=%s",
+        ref,
+    )
+
+
+# ---------------------------------------------------------------------------
 # GitHub
 # ---------------------------------------------------------------------------
 
@@ -423,18 +474,6 @@ def get_workflows(
     For backward compatibility, the property name "workflows"
     is also accepted.
     """
-
-    # ---------------------------------------------------------------
-    # Find the workflow property.
-    #
-    # Preferred/current name:
-    #
-    #     workflow
-    #
-    # Backward-compatible name:
-    #
-    #     workflows
-    # ---------------------------------------------------------------
 
     property_name: str | None = None
 
@@ -818,9 +857,30 @@ def build_release_description(
 
         version=VERSION|tag=TAG|repository=REPOSITORY|workflows=ENV:WORKFLOW,...|ref=REF
 
-    Example:
+    New release example:
 
-        version=1.0.0|tag=v1.0.0|repository=Test-Organization7144/TestGithubWorkflow|workflows=prod:proddeploy.yml,uat:uatdeploy.yml|ref=main
+        version=1.2.0|tag=v1.2.0|repository=Test-Organization7144/TestGithubWorkflow|workflows=prod:proddeploy.yml,uat:uatdeploy.yml|ref=v1.2.0
+
+    Existing release example:
+
+        version=1.0.0|tag=v1.0.0|repository=Test-Organization7144/TestGithubWorkflow|workflows=prod:proddeploy.yml,uat:uatdeploy.yml|ref=v1.0.0
+
+    IMPORTANT:
+
+        REF represents the actual release/deployment reference.
+
+        It is intentionally independent from the GitHub Actions
+        workflow execution reference.
+
+    Therefore:
+
+        New release:
+            workflow execution ref = v1.2.0
+            REF                    = v1.2.0
+
+        Existing release:
+            workflow execution ref = main
+            REF                    = v1.0.0
     """
 
     workflow_text = ",".join(
@@ -1021,7 +1081,30 @@ def main() -> int:
         )
 
         # ---------------------------------------------------------------
-        # 2. Create GitHub API session
+        # 2. Validate release reference
+        #
+        # REF must match TAG.
+        #
+        # This does NOT mean the GitHub Actions workflow itself must
+        # run from TAG.
+        #
+        # The workflow can run from:
+        #
+        #     v1.2.0  -> new release
+        #
+        # or:
+        #
+        #     main    -> existing release
+        #
+        # while REF remains the actual release tag.
+        # ---------------------------------------------------------------
+
+        validate_release_reference(
+            environment,
+        )
+
+        # ---------------------------------------------------------------
+        # 3. Create GitHub API session
         # ---------------------------------------------------------------
 
         github_session = create_github_session(
@@ -1029,7 +1112,7 @@ def main() -> int:
         )
 
         # ---------------------------------------------------------------
-        # 3. Read GitHub custom properties
+        # 4. Read GitHub custom properties
         # ---------------------------------------------------------------
 
         properties = get_repository_properties(
@@ -1038,7 +1121,7 @@ def main() -> int:
         )
 
         # ---------------------------------------------------------------
-        # 4. Read Jira projects from custom property
+        # 5. Read Jira projects from custom property
         # ---------------------------------------------------------------
 
         projects = get_jira_projects(
@@ -1047,7 +1130,7 @@ def main() -> int:
         )
 
         # ---------------------------------------------------------------
-        # 5. Read workflows from custom property
+        # 6. Read workflows from custom property
         # ---------------------------------------------------------------
 
         workflows = get_workflows(
@@ -1056,7 +1139,7 @@ def main() -> int:
         )
 
         # ---------------------------------------------------------------
-        # 6. Build Jira release description
+        # 7. Build Jira release description
         # ---------------------------------------------------------------
 
         description = build_release_description(
@@ -1065,7 +1148,7 @@ def main() -> int:
         )
 
         # ---------------------------------------------------------------
-        # 7. Log configuration
+        # 8. Log configuration
         # ---------------------------------------------------------------
 
         log_configuration(
@@ -1076,7 +1159,7 @@ def main() -> int:
         )
 
         # ---------------------------------------------------------------
-        # 8. Create Jira API session
+        # 9. Create Jira API session
         # ---------------------------------------------------------------
 
         jira_session = create_jira_session(
@@ -1088,7 +1171,7 @@ def main() -> int:
         existing: list[str] = []
 
         # ---------------------------------------------------------------
-        # 9. Create release in every configured Jira project
+        # 10. Create release in every configured Jira project
         # ---------------------------------------------------------------
 
         for project in projects:
@@ -1107,7 +1190,7 @@ def main() -> int:
                 existing.append(project)
 
         # ---------------------------------------------------------------
-        # 10. Final result
+        # 11. Final result
         # ---------------------------------------------------------------
 
         LOGGER.info(
@@ -1126,6 +1209,16 @@ def main() -> int:
         LOGGER.info(
             "Already exists: %s",
             ", ".join(existing) or "None",
+        )
+
+        LOGGER.info(
+            "Release TAG   : %s",
+            environment["TAG"],
+        )
+
+        LOGGER.info(
+            "Release REF   : %s",
+            environment["REF"],
         )
 
         LOGGER.info(
@@ -1174,3 +1267,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
