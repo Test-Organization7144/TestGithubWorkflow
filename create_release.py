@@ -19,10 +19,42 @@ GITHUB_API_VERSION = "2022-11-28"
 
 JIRA_PROJECTS_PROPERTY = "jira_projects"
 
-# Current GitHub Custom Property name:
+# ---------------------------------------------------------------------------
+# Deployment model
+# ---------------------------------------------------------------------------
+#
+# Supported values:
+#
+#     direct
+#     template
+#
+# The property is optional for backward compatibility.
+#
+# If the property does not exist, the repository is treated as:
+#
+#     direct
+#
+DEPLOYMENT_TYPE_PROPERTY = "deployment_type"
+
+DEPLOYMENT_TYPE_DIRECT = "direct"
+DEPLOYMENT_TYPE_TEMPLATE = "template"
+
+SUPPORTED_DEPLOYMENT_TYPES = {
+    DEPLOYMENT_TYPE_DIRECT,
+    DEPLOYMENT_TYPE_TEMPLATE,
+}
+
+
+# ---------------------------------------------------------------------------
+# Workflow configuration
+# ---------------------------------------------------------------------------
+#
+# Current GitHub Custom Property:
+#
 #     workflow
 #
 # "workflows" is also supported for backward compatibility.
+#
 WORKFLOW_PROPERTY_NAMES = (
     "workflow",
     "workflows",
@@ -228,17 +260,21 @@ def get_repository_properties(
     LOGGER.info(
         "========================================"
     )
+
     LOGGER.info(
         "Reading GitHub repository custom properties"
     )
+
     LOGGER.info(
         "Repository: %s",
         repository,
     )
+
     LOGGER.info(
         "Endpoint: %s",
         url,
     )
+
     LOGGER.info(
         "========================================"
     )
@@ -334,6 +370,104 @@ def get_property_value(
 
 
 # ---------------------------------------------------------------------------
+# Deployment type / repository model
+# ---------------------------------------------------------------------------
+
+def get_deployment_type(
+    properties: dict[str, Any],
+    repository: str,
+) -> str:
+    """
+    Read the repository deployment model.
+
+    Supported values:
+
+        direct
+        template
+
+    The property is optional.
+
+    If it is not configured, the repository is treated as
+    a direct workflow repository.
+
+    Examples:
+
+        deployment_type = direct
+
+        deployment_type = template
+    """
+
+    # ---------------------------------------------------------------
+    # Backward compatibility:
+    #
+    # Existing repositories do not need to add deployment_type.
+    # They automatically remain "direct".
+    # ---------------------------------------------------------------
+
+    if DEPLOYMENT_TYPE_PROPERTY not in properties:
+
+        LOGGER.info(
+            "Custom property '%s' is not configured for repository "
+            "'%s'. Defaulting deployment type to '%s'.",
+            DEPLOYMENT_TYPE_PROPERTY,
+            repository,
+            DEPLOYMENT_TYPE_DIRECT,
+        )
+
+        return DEPLOYMENT_TYPE_DIRECT
+
+    value = properties[DEPLOYMENT_TYPE_PROPERTY]
+
+    if value is None:
+        LOGGER.info(
+            "Custom property '%s' is empty for repository '%s'. "
+            "Defaulting deployment type to '%s'.",
+            DEPLOYMENT_TYPE_PROPERTY,
+            repository,
+            DEPLOYMENT_TYPE_DIRECT,
+        )
+
+        return DEPLOYMENT_TYPE_DIRECT
+
+    # GitHub custom properties may be returned as strings.
+    # Handle a list defensively as well.
+    if isinstance(value, list):
+
+        if not value:
+            return DEPLOYMENT_TYPE_DIRECT
+
+        value = value[0]
+
+    deployment_type = str(value).strip().lower()
+
+    if not deployment_type:
+        LOGGER.info(
+            "Deployment type is empty for repository '%s'. "
+            "Defaulting to '%s'.",
+            repository,
+            DEPLOYMENT_TYPE_DIRECT,
+        )
+
+        return DEPLOYMENT_TYPE_DIRECT
+
+    if deployment_type not in SUPPORTED_DEPLOYMENT_TYPES:
+        raise ValueError(
+            f"Invalid GitHub custom property "
+            f"'{DEPLOYMENT_TYPE_PROPERTY}'='{deployment_type}' "
+            f"for repository '{repository}'. "
+            f"Supported values are: "
+            f"{', '.join(sorted(SUPPORTED_DEPLOYMENT_TYPES))}."
+        )
+
+    LOGGER.info(
+        "Deployment type: %s",
+        deployment_type,
+    )
+
+    return deployment_type
+
+
+# ---------------------------------------------------------------------------
 # Jira project configuration from GitHub custom properties
 # ---------------------------------------------------------------------------
 
@@ -356,6 +490,7 @@ def get_jira_projects(
     )
 
     if isinstance(value, list):
+
         projects = [
             str(project).strip()
             for project in value
@@ -363,6 +498,7 @@ def get_jira_projects(
         ]
 
     else:
+
         projects = [
             project.strip()
             for project in str(value).split(",")
@@ -410,6 +546,18 @@ def get_workflows(
             "prod": "proddeploy.yml"
         }
 
+    Template example:
+
+        workflow = dev=non-prod.yml|test=non-prod.yml|uat=non-prod.yml
+
+    Result:
+
+        {
+            "dev": "non-prod.yml",
+            "test": "non-prod.yml",
+            "uat": "non-prod.yml"
+        }
+
     A single direct workflow is also supported:
 
         workflow = deploy1.yml
@@ -439,6 +587,7 @@ def get_workflows(
     property_name: str | None = None
 
     for candidate in WORKFLOW_PROPERTY_NAMES:
+
         if candidate in properties:
             property_name = candidate
             break
@@ -465,13 +614,6 @@ def get_workflows(
 
     # ---------------------------------------------------------------
     # Handle list values defensively.
-    #
-    # Example:
-    #
-    # [
-    #     "uat=uatdeploy.yml",
-    #     "prod=proddeploy.yml"
-    # ]
     # ---------------------------------------------------------------
 
     if isinstance(value, list):
@@ -496,6 +638,10 @@ def get_workflows(
     # Environment-specific format:
     #
     # uat=uatdeploy.yml|prod=proddeploy.yml
+    #
+    # OR template:
+    #
+    # dev=non-prod.yml|test=non-prod.yml|uat=non-prod.yml
     # ---------------------------------------------------------------
 
     if "=" in value:
@@ -510,12 +656,14 @@ def get_workflows(
                 continue
 
             if "=" not in mapping:
+
                 LOGGER.warning(
                     "Ignoring invalid workflow mapping '%s' "
                     "for repository '%s'.",
                     mapping,
                     repository,
                 )
+
                 continue
 
             environment, workflow = mapping.split(
@@ -527,20 +675,24 @@ def get_workflows(
             workflow = workflow.strip()
 
             if not environment:
+
                 LOGGER.warning(
                     "Ignoring workflow mapping with empty "
                     "environment for repository '%s'.",
                     repository,
                 )
+
                 continue
 
             if not workflow:
+
                 LOGGER.warning(
                     "Ignoring workflow mapping with empty workflow "
                     "for environment '%s' in repository '%s'.",
                     environment,
                     repository,
                 )
+
                 continue
 
             result[environment] = workflow
@@ -662,12 +814,15 @@ def json_object(
 
     try:
         data = response.json()
+
     except ValueError as exc:
+
         raise ValueError(
             f"Invalid JSON returned by {operation}."
         ) from exc
 
     if not isinstance(data, dict):
+
         raise ValueError(
             f"Unexpected response returned by {operation}."
         )
@@ -694,10 +849,12 @@ def get_jira_project(
     )
 
     if not response.ok:
+
         log_api_error(
             response,
             operation,
         )
+
         response.raise_for_status()
 
     return json_object(
@@ -772,6 +929,7 @@ def create_jira_version(
     )
 
     if response.ok:
+
         return (
             "created",
             json_object(
@@ -809,6 +967,7 @@ def create_jira_version(
 
 def build_release_description(
     environment: dict[str, str],
+    deployment_type: str,
     workflows: dict[str, str],
 ) -> str:
     """
@@ -816,11 +975,24 @@ def build_release_description(
 
     Format:
 
-        version=VERSION|tag=TAG|repository=REPOSITORY|workflows=ENV:WORKFLOW,...|ref=REF
+        version=VERSION|tag=TAG|repository=REPOSITORY|
+        deploymentType=TYPE|workflows=ENV:WORKFLOW,...|ref=REF
 
-    Example:
+    Example - direct:
 
-        version=1.0.0|tag=v1.0.0|repository=Test-Organization7144/TestGithubWorkflow|workflows=prod:proddeploy.yml,uat:uatdeploy.yml|ref=main
+        version=1.0.0|tag=v1.0.0|
+        repository=Test-Organization7144/TestGithubWorkflow|
+        deploymentType=direct|
+        workflows=prod:proddeploy.yml,uat:uatdeploy.yml|
+        ref=main
+
+    Example - template:
+
+        version=1.0.0|tag=v1.0.0|
+        repository=Test-Organization7144/Test-Deployment-App|
+        deploymentType=template|
+        workflows=dev:non-prod.yml,test:non-prod.yml,uat:non-prod.yml|
+        ref=main
     """
 
     workflow_text = ",".join(
@@ -833,6 +1005,7 @@ def build_release_description(
         f"version={environment['VERSION']}"
         f"|tag={environment['TAG']}"
         f"|repository={environment['REPOSITORY']}"
+        f"|deploymentType={deployment_type}"
         f"|workflows={workflow_text}"
         f"|ref={environment['REF']}"
     )
@@ -867,6 +1040,7 @@ def process_project(
     )
 
     try:
+
         project_id = int(project["id"])
 
     except KeyError as exc:
@@ -903,6 +1077,7 @@ def process_project(
         return status
 
     if release is None:
+
         raise ValueError(
             f"Jira release response for project '{project_key}' "
             "did not contain release data."
@@ -927,6 +1102,7 @@ def process_project(
 
 def log_configuration(
     environment: dict[str, str],
+    deployment_type: str,
     projects: list[str],
     workflows: dict[str, str],
     description: str,
@@ -952,42 +1128,47 @@ def log_configuration(
     )
 
     LOGGER.info(
-        "Repository : %s",
+        "Repository       : %s",
         environment["REPOSITORY"],
     )
 
     LOGGER.info(
-        "Version    : %s",
+        "Version          : %s",
         environment["VERSION"],
     )
 
     LOGGER.info(
-        "Tag        : %s",
+        "Tag              : %s",
         environment["TAG"],
     )
 
     LOGGER.info(
-        "REF        : %s",
+        "REF              : %s",
         environment["REF"],
     )
 
     LOGGER.info(
-        "Jira       : %s",
+        "Deployment Type  : %s",
+        deployment_type,
+    )
+
+    LOGGER.info(
+        "Jira             : %s",
         environment["JIRA_URL"],
     )
 
     LOGGER.info(
-        "Projects   : %s",
+        "Projects         : %s",
         ", ".join(projects),
     )
 
     LOGGER.info(
-        "Workflows  : %s",
+        "Workflows        : %s",
         workflow_text,
     )
 
     LOGGER.info(
-        "Description: %s",
+        "Description      : %s",
         description,
     )
 
@@ -1038,7 +1219,21 @@ def main() -> int:
         )
 
         # ---------------------------------------------------------------
-        # 4. Read Jira projects from custom property
+        # 4. Read deployment type
+        #
+        # If deployment_type is not configured, get_deployment_type()
+        # automatically returns "direct".
+        #
+        # This preserves all existing repositories.
+        # ---------------------------------------------------------------
+
+        deployment_type = get_deployment_type(
+            properties,
+            environment["REPOSITORY"],
+        )
+
+        # ---------------------------------------------------------------
+        # 5. Read Jira projects
         # ---------------------------------------------------------------
 
         projects = get_jira_projects(
@@ -1047,7 +1242,7 @@ def main() -> int:
         )
 
         # ---------------------------------------------------------------
-        # 5. Read workflows from custom property
+        # 6. Read workflows
         # ---------------------------------------------------------------
 
         workflows = get_workflows(
@@ -1056,27 +1251,29 @@ def main() -> int:
         )
 
         # ---------------------------------------------------------------
-        # 6. Build Jira release description
+        # 7. Build Jira release description
         # ---------------------------------------------------------------
 
         description = build_release_description(
             environment,
+            deployment_type,
             workflows,
         )
 
         # ---------------------------------------------------------------
-        # 7. Log configuration
+        # 8. Log configuration
         # ---------------------------------------------------------------
 
         log_configuration(
             environment,
+            deployment_type,
             projects,
             workflows,
             description,
         )
 
         # ---------------------------------------------------------------
-        # 8. Create Jira API session
+        # 9. Create Jira API session
         # ---------------------------------------------------------------
 
         jira_session = create_jira_session(
@@ -1088,7 +1285,7 @@ def main() -> int:
         existing: list[str] = []
 
         # ---------------------------------------------------------------
-        # 9. Create release in every configured Jira project
+        # 10. Create release in every configured Jira project
         # ---------------------------------------------------------------
 
         for project in projects:
@@ -1102,12 +1299,15 @@ def main() -> int:
             )
 
             if status == "created":
+
                 created.append(project)
+
             else:
+
                 existing.append(project)
 
         # ---------------------------------------------------------------
-        # 10. Final result
+        # 11. Final result
         # ---------------------------------------------------------------
 
         LOGGER.info(
@@ -1126,6 +1326,11 @@ def main() -> int:
         LOGGER.info(
             "Already exists: %s",
             ", ".join(existing) or "None",
+        )
+
+        LOGGER.info(
+            "Deployment Type: %s",
+            deployment_type,
         )
 
         LOGGER.info(
