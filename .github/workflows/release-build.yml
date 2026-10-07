@@ -10,11 +10,14 @@ on:
         default: "1.0.0"
 
       tag:
-        description: Release tag
+        description: Git tag
         required: true
         type: string
-        default: "v1.0.0"
+        default: v1.0.0
 
+# Permissions available to the Actions GITHUB_TOKEN.
+# Do NOT add "metadata" here. Metadata is a GitHub API/repository
+# permission, not a valid Actions workflow permission.
 permissions:
   contents: read
 
@@ -28,51 +31,34 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
+      # Release information supplied when the workflow is manually run
       VERSION: ${{ inputs.version }}
       TAG: ${{ inputs.tag }}
+
+      # Automatically identifies the repository where this workflow runs.
+      # Example:
+      # Test-Organization7144/TestGithubWorkflow
       REPOSITORY: ${{ github.repository }}
 
-      # The release tag is always the REF stored in Jira.
-      #
-      # New release:
-      #   Workflow run ref = v1.2.0
-      #   TAG              = v1.2.0
-      #   REF              = v1.2.0
-      #
-      # Existing release:
-      #   Workflow run ref = main
-      #   TAG              = v1.0.0
-      #   REF              = v1.0.0
-      REF: ${{ inputs.tag }}
+      # Branch/tag from which the workflow was manually started.
+      # Example:
+      # main
+      REF: ${{ github.ref_name }}
 
+      # Jira configuration
       JIRA_URL: https://ranjith-kumar-a.atlassian.net
 
     steps:
 
-      # ---------------------------------------------------------
-      # 1. Checkout
-      # ---------------------------------------------------------
-      #
-      # IMPORTANT:
-      #
-      # GitHub automatically checks out the ref selected in the
-      # "Run workflow" Branch/tag selector.
-      #
-      # New release:
-      #   Select v1.2.0
-      #
-      # Existing release:
-      #   Select main
-      #
-      # The release TAG itself is controlled independently through
-      # the "tag" input.
-      #
+      # ------------------------------------------------------------
+      # 1. Checkout repository
+      # ------------------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ---------------------------------------------------------
+      # ------------------------------------------------------------
       # 2. Display release information
-      # ---------------------------------------------------------
+      # ------------------------------------------------------------
       - name: Show release information
         shell: bash
         run: |
@@ -81,69 +67,29 @@ jobs:
           echo "========================================"
           echo "Release Build"
           echo "========================================"
-          echo "Repository        : ${REPOSITORY}"
-          echo "Version           : ${VERSION}"
-          echo "Release Tag       : ${TAG}"
-          echo "Jira REF          : ${REF}"
-          echo "Workflow Run Ref  : ${{ github.ref_name }}"
-          echo "GitHub Ref        : ${{ github.ref }}"
-          echo "Ref Type          : ${{ github.ref_type }}"
-          echo "Commit SHA        : ${{ github.sha }}"
+          echo "Repository : ${REPOSITORY}"
+          echo "Version    : ${VERSION}"
+          echo "Tag        : ${TAG}"
+          echo "REF        : ${REF}"
+          echo "GitHub Ref : ${{ github.ref }}"
+          echo "Ref Type   : ${{ github.ref_type }}"
+          echo "Commit SHA : ${{ github.sha }}"
           echo "========================================"
 
-      # ---------------------------------------------------------
-      # 3. Validate that the requested release tag exists
-      # ---------------------------------------------------------
-      #
-      # This protects against accidentally creating Jira metadata
-      # for a tag that does not exist.
-      #
-      # It works for both:
-      #
-      #   New tag:
-      #       v1.2.0 exists and workflow is running from v1.2.0
-      #
-      #   Existing tag:
-      #       workflow is running from main
-      #       TAG=v1.0.0
-      #       v1.0.0 is checked here
-      #
-      - name: Validate release tag
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "Checking release tag: ${TAG}"
-
-          if ! git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
-            echo ""
-            echo "ERROR: Release tag '${TAG}' does not exist in the repository."
-            echo ""
-            echo "For a new release:"
-            echo "  1. Create and push the tag."
-            echo "  2. Select that tag in the GitHub Branch/tag selector."
-            echo "  3. Run this workflow."
-            echo ""
-            echo "For an existing release:"
-            echo "  1. Select main as the workflow ref."
-            echo "  2. Enter the existing tag as the Tag input."
-            echo ""
-            exit 1
-          fi
-
-          echo "Release tag '${TAG}' exists."
-
-      # ---------------------------------------------------------
-      # 4. Set up Python
-      # ---------------------------------------------------------
+      # ------------------------------------------------------------
+      # 3. Set up Python
+      # ------------------------------------------------------------
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      # ---------------------------------------------------------
-      # 5. Install dependencies
-      # ---------------------------------------------------------
+      # ------------------------------------------------------------
+      # 4. Install Python dependencies
+      #
+      # No PyYAML is required anymore because jira-projects.yml
+      # is no longer being used.
+      # ------------------------------------------------------------
       - name: Install Python dependencies
         shell: bash
         run: |
@@ -154,13 +100,27 @@ jobs:
           python -m pip install \
             "requests>=2.32,<3"
 
-      # ---------------------------------------------------------
-      # 6. Create Jira releases
-      # ---------------------------------------------------------
+      # ------------------------------------------------------------
+      # 5. Read GitHub Custom Properties and create Jira releases
+      #
+      # create_release.py reads:
+      #
+      #   jira_projects
+      #   workflows
+      #
+      # directly from:
+      #
+      # GET /repos/{owner}/{repo}/properties/values
+      #
+      # GITHUB_TOKEN is the automatically generated GitHub Actions
+      # token for this repository.
+      # ------------------------------------------------------------
       - name: Create Jira releases
         env:
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+
+          # Use the automatically generated Actions token.
           GITHUB_TOKEN: ${{ github.token }}
 
         shell: bash
@@ -170,10 +130,10 @@ jobs:
           echo "========================================"
           echo "Starting Jira release creation"
           echo "========================================"
-          echo "Repository : ${REPOSITORY}"
-          echo "Version    : ${VERSION}"
-          echo "Tag        : ${TAG}"
-          echo "REF        : ${REF}"
+          echo "Repository: ${REPOSITORY}"
+          echo "Version   : ${VERSION}"
+          echo "Tag       : ${TAG}"
+          echo "REF       : ${REF}"
           echo "========================================"
 
           python create_release.py
