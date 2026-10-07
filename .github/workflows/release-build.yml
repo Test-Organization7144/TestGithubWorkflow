@@ -4,20 +4,23 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Release version
+        description: Jira release version
         required: true
         type: string
         default: "1.0.0"
 
       tag:
-        description: Git tag
+        description: Git tag for the release
         required: true
         type: string
-        default: v1.0.0
+        default: "v1.0.0"
 
-# Permissions available to the Actions GITHUB_TOKEN.
-# Do NOT add "metadata" here. Metadata is a GitHub API/repository
-# permission, not a valid Actions workflow permission.
+      ref:
+        description: Branch or existing tag to deploy from
+        required: true
+        type: string
+        default: "main"
+
 permissions:
   contents: read
 
@@ -31,34 +34,30 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      # Release information supplied when the workflow is manually run
       VERSION: ${{ inputs.version }}
       TAG: ${{ inputs.tag }}
-
-      # Automatically identifies the repository where this workflow runs.
-      # Example:
-      # Test-Organization7144/TestGithubWorkflow
       REPOSITORY: ${{ github.repository }}
-
-      # Branch/tag from which the workflow was manually started.
-      # Example:
-      # main
-      REF: ${{ github.ref_name }}
-
-      # Jira configuration
+      REF: ${{ inputs.ref }}
       JIRA_URL: https://ranjith-kumar-a.atlassian.net
 
     steps:
 
-      # ------------------------------------------------------------
-      # 1. Checkout repository
-      # ------------------------------------------------------------
+      # ---------------------------------------------------------------
+      # 1. Checkout the workflow source
+      #
+      # The workflow runs from the branch/tag selected when manually
+      # starting the GitHub Actions workflow.
+      #
+      # The deployment REF is independent and comes from inputs.ref.
+      # ---------------------------------------------------------------
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ------------------------------------------------------------
-      # 2. Display release information
-      # ------------------------------------------------------------
+      # ---------------------------------------------------------------
+      # 2. Show release information
+      # ---------------------------------------------------------------
+
       - name: Show release information
         shell: bash
         run: |
@@ -67,29 +66,79 @@ jobs:
           echo "========================================"
           echo "Release Build"
           echo "========================================"
-          echo "Repository : ${REPOSITORY}"
-          echo "Version    : ${VERSION}"
-          echo "Tag        : ${TAG}"
-          echo "REF        : ${REF}"
-          echo "GitHub Ref : ${{ github.ref }}"
-          echo "Ref Type   : ${{ github.ref_type }}"
-          echo "Commit SHA : ${{ github.sha }}"
+
+          echo "Repository        : ${REPOSITORY}"
+          echo "Version           : ${VERSION}"
+          echo "Tag               : ${TAG}"
+          echo "Deployment REF    : ${REF}"
+
+          echo "Workflow Source   : ${{ github.ref_name }}"
+          echo "GitHub Ref        : ${{ github.ref }}"
+          echo "Ref Type          : ${{ github.ref_type }}"
+          echo "Commit SHA        : ${{ github.sha }}"
+
           echo "========================================"
 
-      # ------------------------------------------------------------
-      # 3. Set up Python
-      # ------------------------------------------------------------
+      # ---------------------------------------------------------------
+      # 3. Validate deployment REF
+      #
+      # This does not require the ref to be the same as the workflow
+      # source. It supports:
+      #
+      #   main
+      #   develop
+      #   release/1.0.0
+      #   v1.0.0
+      #
+      # The actual validation is performed against the GitHub repository.
+      # ---------------------------------------------------------------
+
+      - name: Validate deployment REF
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          echo "========================================"
+          echo "Validating deployment REF"
+          echo "========================================"
+          echo "Repository : ${REPOSITORY}"
+          echo "REF        : ${REF}"
+          echo "========================================"
+
+          if gh api \
+            "repos/${REPOSITORY}/git/ref/heads/${REF}" \
+            >/dev/null 2>&1; then
+
+            echo "REF '${REF}' found as a branch."
+
+          elif gh api \
+            "repos/${REPOSITORY}/git/ref/tags/${REF}" \
+            >/dev/null 2>&1; then
+
+            echo "REF '${REF}' found as a tag."
+
+          else
+
+            echo "ERROR: REF '${REF}' was not found as a branch or tag."
+            exit 1
+
+          fi
+
+      # ---------------------------------------------------------------
+      # 4. Set up Python
+      # ---------------------------------------------------------------
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      # ------------------------------------------------------------
-      # 4. Install Python dependencies
-      #
-      # No PyYAML is required anymore because jira-projects.yml
-      # is no longer being used.
-      # ------------------------------------------------------------
+      # ---------------------------------------------------------------
+      # 5. Install Python dependencies
+      # ---------------------------------------------------------------
+
       - name: Install Python dependencies
         shell: bash
         run: |
@@ -100,27 +149,25 @@ jobs:
           python -m pip install \
             "requests>=2.32,<3"
 
-      # ------------------------------------------------------------
-      # 5. Read GitHub Custom Properties and create Jira releases
+      # ---------------------------------------------------------------
+      # 6. Create Jira releases
+      #
+      # GITHUB_TOKEN is used to read repository Custom Properties.
       #
       # create_release.py reads:
       #
       #   jira_projects
-      #   workflows
+      #   workflow
       #
-      # directly from:
+      # from:
       #
-      # GET /repos/{owner}/{repo}/properties/values
-      #
-      # GITHUB_TOKEN is the automatically generated GitHub Actions
-      # token for this repository.
-      # ------------------------------------------------------------
+      #   /repos/{owner}/{repo}/properties/values
+      # ---------------------------------------------------------------
+
       - name: Create Jira releases
         env:
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
-
-          # Use the automatically generated Actions token.
           GITHUB_TOKEN: ${{ github.token }}
 
         shell: bash
@@ -130,10 +177,12 @@ jobs:
           echo "========================================"
           echo "Starting Jira release creation"
           echo "========================================"
-          echo "Repository: ${REPOSITORY}"
-          echo "Version   : ${VERSION}"
-          echo "Tag       : ${TAG}"
-          echo "REF       : ${REF}"
+
+          echo "Repository : ${REPOSITORY}"
+          echo "Version    : ${VERSION}"
+          echo "Tag        : ${TAG}"
+          echo "REF        : ${REF}"
+
           echo "========================================"
 
           python create_release.py
