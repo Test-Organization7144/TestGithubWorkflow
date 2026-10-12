@@ -4,26 +4,28 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Release version
+        description: Jira release version
         required: true
         type: string
         default: "1.0.0"
 
       tag:
-        description: Git tag
+        description: Git tag associated with the release
         required: true
         type: string
-        default: v1.0.0
+        default: "v1.0.0"
 
-      environment:
-        description: Deployment environment
+      ref:
+        description: Branch or existing tag used for the release
         required: true
         type: string
-        default: test
+        default: "main"
 
+# Grant only the permissions required by this workflow.
 permissions:
   contents: read
 
+# Prevent simultaneous release builds for the same repository and version.
 concurrency:
   group: release-build-${{ github.repository }}-${{ inputs.version }}
   cancel-in-progress: false
@@ -32,108 +34,138 @@ jobs:
   release-build:
     name: Create Jira Release
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     env:
       VERSION: ${{ inputs.version }}
       TAG: ${{ inputs.tag }}
-      ENVIRONMENT: ${{ inputs.environment }}
       REPOSITORY: ${{ github.repository }}
-
-      # Exact branch/tag selected in GitHub Actions
-      REF: ${{ github.ref }}
-
+      REF: ${{ inputs.ref }}
       JIRA_URL: https://ranjith-kumar-a.atlassian.net
-      CONFIG_REPO: ranjithk0706/github-deployment-config
-      CONFIG_FILE: jira-projects.yml
 
     steps:
-      - name: Checkout repository
+      # 1. Check out the source containing this workflow and the release script.
+      - name: Checkout workflow source
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
-      - name: Show selected Git ref
+      # 2. Validate user inputs before making API calls.
+      - name: Validate release inputs
+        shell: bash
         run: |
-          echo "========================================"
-          echo "GitHub Ref Information"
-          echo "========================================"
-          echo "Selected ref     : ${{ github.ref }}"
-          echo "Selected ref name: ${{ github.ref_name }}"
-          echo "Selected ref type: ${{ github.ref_type }}"
-          echo "========================================"
+          set -euo pipefail
 
+          echo "================================================"
+          echo "Validating release inputs"
+          echo "================================================"
+
+          validate_required_input() {
+            local name="$1"
+            local value="$2"
+
+            if [[ -z "${value//[[:space:]]/}" ]]; then
+              echo "ERROR: ${name} cannot be empty."
+              exit 1
+            fi
+
+            if [[ "${value}" =~ [[:cntrl:]] ]]; then
+              echo "ERROR: ${name} must not contain control characters."
+              exit 1
+            fi
+          }
+
+          validate_required_input "VERSION" "${VERSION}"
+          validate_required_input "TAG" "${TAG}"
+          validate_required_input "REF" "${REF}"
+
+          echo "SUCCESS: Required inputs are valid."
+          echo "Repository : ${REPOSITORY}"
+          echo "Version    : ${VERSION}"
+          echo "Tag        : ${TAG}"
+          echo "REF        : ${REF}"
+
+          echo "================================================"
+
+      # 3. Confirm that the requested deployment ref exists in GitHub.
+      - name: Validate deployment ref
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          echo "================================================"
+          echo "Validating deployment ref"
+          echo "================================================"
+
+          REF_TO_CHECK="${REF}"
+
+          if [[ "${REF_TO_CHECK}" == refs/heads/* ]]; then
+            REF_TO_CHECK="${REF_TO_CHECK#refs/heads/}"
+          elif [[ "${REF_TO_CHECK}" == refs/tags/* ]]; then
+            REF_TO_CHECK="${REF_TO_CHECK#refs/tags/}"
+          fi
+
+          if [[ -z "${REF_TO_CHECK}" || "${REF_TO_CHECK}" == -* ]]; then
+            echo "ERROR: Invalid deployment ref '${REF}'."
+            exit 1
+          fi
+
+          # URL-encode the ref so branch names containing slashes are handled.
+          ENCODED_REF="$(python -c \
+            'import sys; from urllib.parse import quote; print(quote(sys.argv[1], safe=""))' \
+            "${REF_TO_CHECK}")"
+
+          echo "Repository : ${REPOSITORY}"
+          echo "REF        : ${REF_TO_CHECK}"
+
+          if gh api \
+            "repos/${REPOSITORY}/git/ref/heads/${ENCODED_REF}" \
+            --silent >/dev/null 2>&1; then
+
+            echo "SUCCESS: '${REF_TO_CHECK}' exists as a branch."
+
+          elif gh api \
+            "repos/${REPOSITORY}/git/ref/tags/${ENCODED_REF}" \
+            --silent >/dev/null 2>&1; then
+
+            echo "SUCCESS: '${REF_TO_CHECK}' exists as a tag."
+
+          else
+            echo "ERROR: Could not validate '${REF_TO_CHECK}' as a branch or tag."
+            echo "Check that the ref exists and the GitHub token has repository access."
+            echo "If the ref exists, verify GitHub API permissions and availability."
+            exit 1
+          fi
+
+          echo "================================================"
+
+      # 4. Install the required Python runtime.
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Download Jira project configuration
-        env:
-          CONFIG_REPO_TOKEN: ${{ secrets.CONFIG_REPO_TOKEN }}
+      # 5. Install the HTTP dependency required by create_release.py.
+      - name: Install Python dependencies
         shell: bash
         run: |
           set -euo pipefail
 
-          [[ -n "${CONFIG_REPO_TOKEN}" ]] || {
-            echo "::error::CONFIG_REPO_TOKEN secret is not configured."
-            exit 1
-          }
+          echo "================================================"
+          echo "Installing Python dependencies"
+          echo "================================================"
 
-          curl \
-            --fail-with-body \
-            --silent \
-            --show-error \
-            --location \
-            --retry 3 \
-            --retry-delay 2 \
-            --header "Authorization: Bearer ${CONFIG_REPO_TOKEN}" \
-            --header "Accept: application/vnd.github.raw+json" \
-            --header "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/${CONFIG_REPO}/contents/${CONFIG_FILE}" \
-            --output "${CONFIG_FILE}"
+          python --version
+          python -m pip install --disable-pip-version-check "requests>=2.32,<3"
 
-      - name: Verify downloaded Jira configuration
-        shell: bash
-        run: |
-          echo "========================================"
-          echo "Jira Project Configuration"
-          echo "========================================"
-          cat "${CONFIG_FILE}"
-          echo "========================================"
+          python -c "import requests; print('requests version:', requests.__version__)"
 
-      - name: Verify release script
-        shell: bash
-        run: |
-          echo "========================================"
-          echo "Release Script Verification"
-          echo "========================================"
+          echo "SUCCESS: Python dependencies installed."
+          echo "================================================"
 
-          echo "WORKFLOW references:"
-          grep -n "WORKFLOW" create_release.py || true
-
-          echo ""
-          echo "REF references:"
-          grep -n "REF" create_release.py || true
-
-          echo ""
-          echo "Environment values:"
-          echo "VERSION     = ${VERSION}"
-          echo "TAG         = ${TAG}"
-          echo "ENVIRONMENT = ${ENVIRONMENT}"
-          echo "REPOSITORY  = ${REPOSITORY}"
-          echo "REF         = ${REF}"
-
-          echo "========================================"
-
-      - name: Install Python dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install "requests>=2.32,<3" "PyYAML>=6.0,<7"
-# ---------------------------------------------------------------
-      # Diagnose release configuration
-      #
-      # Detects missing scripts and Python syntax errors before the
-      # Jira release creation step is executed.
-      # ---------------------------------------------------------------
-
+      # 6. Verify the script, Python syntax, and required environment.
       - name: Diagnose release configuration
         shell: bash
         env:
@@ -163,58 +195,88 @@ jobs:
           echo "Checking repository files"
           echo "------------------------------------------------"
 
-          echo "Root directory contents:"
           ls -la
 
-          echo "------------------------------------------------"
-          echo "Checking create_release.py"
-          echo "------------------------------------------------"
-
-          if [[ -f "create_release.py" ]]; then
-            echo "SUCCESS: create_release.py exists."
-            echo "Script path: $(realpath create_release.py)"
-          else
+          if [[ ! -f "create_release.py" ]]; then
             echo "ERROR: create_release.py was not found in the repository root."
-            echo "Possible causes:"
-            echo "1. The workflow source branch or tag is outdated."
-            echo "2. The script has not been committed to this ref."
-            echo "3. The script is stored in a different directory."
-            echo "Jira release creation will not be attempted."
+            echo "Check that the script exists in the selected workflow source."
             exit 1
           fi
 
+          echo "SUCCESS: create_release.py exists at $(realpath create_release.py)."
+
           echo "------------------------------------------------"
-          echo "Checking Python syntax"
+          echo "Validating Python syntax"
           echo "------------------------------------------------"
 
-          if python -m py_compile create_release.py; then
-            echo "SUCCESS: Python syntax validation passed."
-          else
-            echo "ERROR: create_release.py contains a Python syntax error."
-            echo "Fix the script before attempting Jira release creation."
+          if ! python -m py_compile create_release.py; then
+            echo "ERROR: Python syntax validation failed."
+            echo "Fix the syntax errors before creating Jira releases."
             exit 1
           fi
 
+          echo "SUCCESS: Python syntax validation passed."
+
           echo "------------------------------------------------"
-          echo "Checking required Python dependency"
+          echo "Checking Python dependency"
           echo "------------------------------------------------"
 
-          if python -c "import requests; print('requests version:', requests.__version__)"; then
-            echo "SUCCESS: requests is available."
-          else
-            echo "ERROR: requests could not be imported."
-            exit 1
-          fi
+          python -c "import requests; print('requests version:', requests.__version__)"
 
           echo "================================================"
           echo "Diagnostics completed successfully."
           echo "Proceeding to Jira release creation."
           echo "================================================"
 
-      # ---------------------------------------------------------------
-
+      # 7. Read repository custom properties and create Jira releases.
       - name: Create Jira releases
+        shell: bash
         env:
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
-        run: python create_release.py
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          echo "================================================"
+          echo "Starting Jira release creation"
+          echo "================================================"
+
+          echo "Repository : ${REPOSITORY}"
+          echo "Version    : ${VERSION}"
+          echo "Tag        : ${TAG}"
+          echo "REF        : ${REF}"
+          echo "Jira URL   : ${JIRA_URL}"
+
+          # Fail early when required credentials are missing.
+          if [[ -z "${JIRA_EMAIL:-}" ]]; then
+            echo "ERROR: JIRA_EMAIL secret is not configured."
+            exit 1
+          fi
+
+          if [[ -z "${JIRA_API_TOKEN:-}" ]]; then
+            echo "ERROR: JIRA_API_TOKEN secret is not configured."
+            exit 1
+          fi
+
+          if [[ -z "${GITHUB_TOKEN:-}" ]]; then
+            echo "ERROR: GitHub token is unavailable."
+            exit 1
+          fi
+
+          echo "------------------------------------------------"
+          echo "Executing create_release.py"
+          echo "------------------------------------------------"
+
+          if python create_release.py; then
+            echo "SUCCESS: Jira release script completed."
+          else
+            exit_code=$?
+            echo "ERROR: Jira release script failed with exit code ${exit_code}."
+            echo "Review the preceding error messages and API permissions."
+            exit "${exit_code}"
+          fi
+
+          echo "================================================"
+          echo "Release Build completed successfully."
+          echo "================================================"
