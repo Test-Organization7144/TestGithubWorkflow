@@ -40,71 +40,31 @@ jobs:
       JIRA_URL: https://ranjith-kumar-a.atlassian.net
 
     steps:
-      # Check out the revision containing the workflow and release script.
+      # Run the workflow code from the branch or tag selected in the Actions UI.
       - name: Checkout workflow source
         uses: actions/checkout@v4
         with:
           persist-credentials: false
 
-      # Validate required files before installing dependencies or calling APIs.
-      - name: Validate workflow source files
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if [[ ! -f "create_release.py" ]]; then
-            echo "::error title=Release script missing::The workflow source ref '${GITHUB_REF}' does not contain 'create_release.py'. Update the workflow source branch or tag with the supported release implementation."
-            exit 1
-          fi
-
-          if [[ ! -f ".github/workflows/release-build.yml" ]]; then
-            echo "::error title=Workflow file missing::The checked-out workflow source does not contain '.github/workflows/release-build.yml'. Verify the repository structure."
-            exit 1
-          fi
-
-          echo "Workflow source validation passed."
-          echo "Release script: create_release.py"
-
-      # Validate release metadata before making API calls.
+      # Reject invalid release metadata before making API calls.
       - name: Validate release inputs
         shell: bash
         run: |
           set -euo pipefail
-
-          if [[ -z "${VERSION//[[:space:]]/}" ]]; then
-            echo "::error title=Invalid version::The Jira release version cannot be empty."
+          [[ "${VERSION}" =~ ^[0-9A-Za-z][0-9A-Za-z._+-]*$ ]] || {
+            echo "::error::Invalid version '${VERSION}'."
+            exit 1
+          }
+          git check-ref-format "refs/tags/${TAG}" || {
+            echo "::error::Invalid Git tag name '${TAG}'."
+            exit 1
+          }
+          if ! git check-ref-format "refs/heads/${REF}" && ! git check-ref-format "refs/tags/${REF}"; then
+            echo "::error::Invalid source ref '${REF}'."
             exit 1
           fi
 
-          if [[ ! "${VERSION}" =~ ^[0-9A-Za-z][0-9A-Za-z._+-]*$ ]]; then
-            echo "::error title=Invalid version::Version '${VERSION}' contains unsupported characters. Use letters, numbers, dots, underscores, plus signs, or hyphens."
-            exit 1
-          fi
-
-          if [[ -z "${TAG//[[:space:]]/}" ]]; then
-            echo "::error title=Invalid tag::The release tag cannot be empty."
-            exit 1
-          fi
-
-          if ! git check-ref-format "refs/tags/${TAG}"; then
-            echo "::error title=Invalid tag::'${TAG}' is not a valid Git tag name."
-            exit 1
-          fi
-
-          if [[ -z "${REF//[[:space:]]/}" ]]; then
-            echo "::error title=Invalid source ref::The source branch or tag cannot be empty."
-            exit 1
-          fi
-
-          if ! git check-ref-format "refs/heads/${REF}" &&
-             ! git check-ref-format "refs/tags/${REF}"; then
-            echo "::error title=Invalid source ref::'${REF}' is not a valid branch or tag name."
-            exit 1
-          fi
-
-          echo "Release input validation passed."
-
-      # Resolve the requested branch or tag without relying on checkout defaults.
+      # Resolve branch or tag names to an immutable commit SHA, including annotated tags.
       - name: Validate and resolve source ref
         id: source-ref
         shell: bash
@@ -112,31 +72,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-
+          git remote set-url origin "https://github.com/${REPOSITORY}.git"
           auth_header="$(printf 'x-access-token:%s' "${GH_TOKEN}" | base64 -w0)"
 
-          if ! matches="$(git -c http.extraheader="AUTHORIZATION: basic ${auth_header}" \
-            ls-remote "https://github.com/${REPOSITORY}.git" \
+          matches="$(git -c http.extraheader="AUTHORIZATION: basic ${auth_header}" ls-remote origin \
             "refs/heads/${REF}" \
             "refs/tags/${REF}" \
-            "refs/tags/${REF}^{}")"; then
-            echo "::error title=GitHub ref lookup failed::Unable to query branches and tags for '${REPOSITORY}'. Verify repository access and the workflow token permissions."
-            exit 1
-          fi
+            "refs/tags/${REF}^{}")"
 
-          branch_sha="$(awk -v ref="refs/heads/${REF}" \
-            '$2 == ref {print $1; exit}' <<< "${matches}")"
-
-          tag_sha="$(awk -v ref="refs/tags/${REF}" \
-            '$2 == ref "^{}" {peeled=$1}
-             $2 == ref {tag=$1}
-             END {
-               if (peeled != "") print peeled;
-               else if (tag != "") print tag
-             }' <<< "${matches}")"
+          branch_sha="$(awk -v ref="refs/heads/${REF}" '$2 == ref {print $1; exit}' <<< "${matches}")"
+          tag_sha="$(awk -v ref="refs/tags/${REF}" '$2 == ref "^{}" {peeled=$1} $2 == ref {tag=$1} END {if (peeled != "") print peeled; else if (tag != "") print tag}' <<< "${matches}")"
 
           if [[ -n "${branch_sha}" && -n "${tag_sha}" ]]; then
-            echo "::error title=Ambiguous source ref::'${REF}' exists as both a branch and a tag. Rename one ref so the source is unambiguous."
+            echo "::error::'${REF}' exists as both a branch and a tag; use a unique name."
             exit 1
           elif [[ -n "${branch_sha}" ]]; then
             source_type="branch"
@@ -145,43 +93,17 @@ jobs:
             source_type="tag"
             source_sha="${tag_sha}"
           else
-            echo "::error title=Source ref not found::Branch or tag '${REF}' was not found in repository '${REPOSITORY}'. Verify the name and push the ref before retrying."
+            echo "::error::Source ref '${REF}' was not found in ${REPOSITORY}."
             exit 1
           fi
 
           echo "source_type=${source_type}" >> "${GITHUB_OUTPUT}"
           echo "source_sha=${source_sha}" >> "${GITHUB_OUTPUT}"
-
           echo "Source ref : ${REF}"
           echo "Ref type   : ${source_type}"
           echo "Commit SHA : ${source_sha}"
 
-      # Check whether the selected branch or tag contains the release script.
-      - name: Validate release script in selected ref
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ steps.source-ref.outputs.source_sha }}
-          path: source-ref
-          persist-credentials: false
-          fetch-depth: 1
-
-      # Fail early when the selected ref is missing the required script.
-      - name: Validate selected ref implementation
-        shell: bash
-        env:
-          SOURCE_TYPE: ${{ steps.source-ref.outputs.source_type }}
-          SOURCE_SHA: ${{ steps.source-ref.outputs.source_sha }}
-        run: |
-          set -euo pipefail
-
-          if [[ ! -f "source-ref/create_release.py" ]]; then
-            echo "::error title=Release script missing in selected ref::The selected ${SOURCE_TYPE} '${REF}' (${SOURCE_SHA}) does not contain 'create_release.py'. Update the branch or tag from the supported release implementation and retry."
-            exit 1
-          fi
-
-          echo "Selected ref contains create_release.py."
-
-      # Log workflow and release revisions for traceability.
+      # Print both the workflow's own revision and the release source revision for traceability.
       - name: Show release context
         shell: bash
         env:
@@ -189,23 +111,23 @@ jobs:
           SOURCE_SHA: ${{ steps.source-ref.outputs.source_sha }}
         run: |
           set -euo pipefail
-
           echo "Repository          : ${REPOSITORY}"
           echo "Jira version        : ${VERSION}"
           echo "Release tag         : ${TAG}"
           echo "Release source ref  : ${REF}"
           echo "Release source type : ${SOURCE_TYPE}"
           echo "Release source SHA  : ${SOURCE_SHA}"
-          echo "Workflow ref        : ${GITHUB_REF}"
-          echo "Workflow commit SHA : ${GITHUB_SHA}"
+          echo "Workflow ref        : ${{ github.ref }}"
+          echo "Workflow commit SHA : ${{ github.sha }}"
 
-      # Set up the supported Python runtime.
+      # Use a fixed Python runtime for consistent execution across manual runs.
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
 
-      # Install the HTTP client required by the release script.
+      # Install only the HTTP client required by the Jira and GitHub API calls.
       - name: Install dependencies
         shell: bash
         run: |
@@ -213,29 +135,13 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install "requests>=2.32,<3"
 
-      # Read repository properties and create Jira releases.
+      # Read repository custom properties and create the release in each configured Jira project.
       - name: Create Jira releases
         env:
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
-          GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN || github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-
-          if [[ ! -f "create_release.py" ]]; then
-            echo "::error title=Release script missing::'create_release.py' is missing from the workflow source checkout."
-            exit 1
-          fi
-
-          if [[ -z "${GITHUB_TOKEN}" ]]; then
-            echo "::error title=GitHub token missing::Configure RELEASE_GITHUB_TOKEN or provide a valid repository GITHUB_TOKEN."
-            exit 1
-          fi
-
-          if [[ -z "${JIRA_EMAIL}" || -z "${JIRA_API_TOKEN}" ]]; then
-            echo "::error title=Jira credentials missing::Configure the JIRA_EMAIL and JIRA_API_TOKEN repository or environment secrets."
-            exit 1
-          fi
-
           python create_release.py
