@@ -40,31 +40,35 @@ jobs:
       JIRA_URL: https://ranjith-kumar-a.atlassian.net
 
     steps:
-      # Run the workflow code from the branch or tag selected in the Actions UI.
+      # Check out the revision containing the workflow and release script.
       - name: Checkout workflow source
         uses: actions/checkout@v4
         with:
           persist-credentials: false
 
-      # Reject invalid release metadata before making API calls.
+      # Validate release metadata before making API calls.
       - name: Validate release inputs
         shell: bash
         run: |
           set -euo pipefail
+
           [[ "${VERSION}" =~ ^[0-9A-Za-z][0-9A-Za-z._+-]*$ ]] || {
             echo "::error::Invalid version '${VERSION}'."
             exit 1
           }
+
           git check-ref-format "refs/tags/${TAG}" || {
             echo "::error::Invalid Git tag name '${TAG}'."
             exit 1
           }
-          if ! git check-ref-format "refs/heads/${REF}" && ! git check-ref-format "refs/tags/${REF}"; then
+
+          if ! git check-ref-format "refs/heads/${REF}" &&
+             ! git check-ref-format "refs/tags/${REF}"; then
             echo "::error::Invalid source ref '${REF}'."
             exit 1
           fi
 
-      # Resolve branch or tag names to an immutable commit SHA, including annotated tags.
+      # Resolve the source branch or tag to its immutable commit SHA.
       - name: Validate and resolve source ref
         id: source-ref
         shell: bash
@@ -72,16 +76,25 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          git remote set-url origin "https://github.com/${REPOSITORY}.git"
+
           auth_header="$(printf 'x-access-token:%s' "${GH_TOKEN}" | base64 -w0)"
 
-          matches="$(git -c http.extraheader="AUTHORIZATION: basic ${auth_header}" ls-remote origin \
+          matches="$(git -c http.extraheader="AUTHORIZATION: basic ${auth_header}" \
+            ls-remote "https://github.com/${REPOSITORY}.git" \
             "refs/heads/${REF}" \
             "refs/tags/${REF}" \
             "refs/tags/${REF}^{}")"
 
-          branch_sha="$(awk -v ref="refs/heads/${REF}" '$2 == ref {print $1; exit}' <<< "${matches}")"
-          tag_sha="$(awk -v ref="refs/tags/${REF}" '$2 == ref "^{}" {peeled=$1} $2 == ref {tag=$1} END {if (peeled != "") print peeled; else if (tag != "") print tag}' <<< "${matches}")"
+          branch_sha="$(awk -v ref="refs/heads/${REF}" \
+            '$2 == ref {print $1; exit}' <<< "${matches}")"
+
+          tag_sha="$(awk -v ref="refs/tags/${REF}" \
+            '$2 == ref "^{}" {peeled=$1}
+             $2 == ref {tag=$1}
+             END {
+               if (peeled != "") print peeled;
+               else if (tag != "") print tag
+             }' <<< "${matches}")"
 
           if [[ -n "${branch_sha}" && -n "${tag_sha}" ]]; then
             echo "::error::'${REF}' exists as both a branch and a tag; use a unique name."
@@ -99,11 +112,12 @@ jobs:
 
           echo "source_type=${source_type}" >> "${GITHUB_OUTPUT}"
           echo "source_sha=${source_sha}" >> "${GITHUB_OUTPUT}"
+
           echo "Source ref : ${REF}"
           echo "Ref type   : ${source_type}"
           echo "Commit SHA : ${source_sha}"
 
-      # Print both the workflow's own revision and the release source revision for traceability.
+      # Log workflow and release revisions for traceability.
       - name: Show release context
         shell: bash
         env:
@@ -111,6 +125,7 @@ jobs:
           SOURCE_SHA: ${{ steps.source-ref.outputs.source_sha }}
         run: |
           set -euo pipefail
+
           echo "Repository          : ${REPOSITORY}"
           echo "Jira version        : ${VERSION}"
           echo "Release tag         : ${TAG}"
@@ -120,14 +135,13 @@ jobs:
           echo "Workflow ref        : ${{ github.ref }}"
           echo "Workflow commit SHA : ${{ github.sha }}"
 
-      # Use a fixed Python runtime for consistent execution across manual runs.
+      # Set up Python without dependency caching because packages are installed directly.
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: pip
 
-      # Install only the HTTP client required by the Jira and GitHub API calls.
+      # Install the HTTP client required by the release script.
       - name: Install dependencies
         shell: bash
         run: |
@@ -135,7 +149,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install "requests>=2.32,<3"
 
-      # Read repository custom properties and create the release in each configured Jira project.
+      # Read repository custom properties and create Jira releases.
       - name: Create Jira releases
         env:
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
