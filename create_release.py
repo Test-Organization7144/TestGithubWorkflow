@@ -19,9 +19,7 @@ GITHUB_API_VERSION = "2022-11-28"
 
 JIRA_PROJECTS_PROPERTY = "jira_projects"
 
-# ---------------------------------------------------------------------------
-# Deployment model
-# ---------------------------------------------------------------------------
+# Deployment model and supported repository types.
 #
 # Supported values:
 #
@@ -45,9 +43,7 @@ SUPPORTED_DEPLOYMENT_TYPES = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Workflow configuration
-# ---------------------------------------------------------------------------
+# GitHub workflow custom-property names.
 #
 # Current GitHub Custom Property:
 #
@@ -63,9 +59,7 @@ WORKFLOW_PROPERTY_NAMES = (
 LOGGER = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Environment
-# ---------------------------------------------------------------------------
+# Environment loading and validation.
 
 def required_env(name: str) -> str:
     """Return a required environment variable."""
@@ -104,9 +98,7 @@ def load_environment() -> dict[str, str]:
     return environment
 
 
-# ---------------------------------------------------------------------------
-# GitHub
-# ---------------------------------------------------------------------------
+# GitHub API operations.
 
 def parse_repository(repository: str) -> tuple[str, str]:
     """
@@ -369,9 +361,7 @@ def get_property_value(
     return value
 
 
-# ---------------------------------------------------------------------------
-# Deployment type / repository model
-# ---------------------------------------------------------------------------
+# Deployment type configuration.
 
 def get_deployment_type(
     properties: dict[str, Any],
@@ -467,9 +457,7 @@ def get_deployment_type(
     return deployment_type
 
 
-# ---------------------------------------------------------------------------
-# Jira project configuration from GitHub custom properties
-# ---------------------------------------------------------------------------
+# Jira project configuration from repository properties.
 
 def get_jira_projects(
     properties: dict[str, Any],
@@ -520,9 +508,7 @@ def get_jira_projects(
     return projects
 
 
-# ---------------------------------------------------------------------------
-# Workflow configuration from GitHub custom properties
-# ---------------------------------------------------------------------------
+# Workflow configuration from repository properties.
 
 def get_workflows(
     properties: dict[str, Any],
@@ -726,9 +712,7 @@ def get_workflows(
     return result
 
 
-# ---------------------------------------------------------------------------
-# Jira
-# ---------------------------------------------------------------------------
+# Jira API operations.
 
 def create_jira_session(
     email: str,
@@ -863,9 +847,7 @@ def get_jira_project(
     )
 
 
-# ---------------------------------------------------------------------------
-# Jira version / release
-# ---------------------------------------------------------------------------
+# Jira release creation and duplicate handling.
 
 def is_duplicate_version(
     response: Response,
@@ -961,9 +943,7 @@ def create_jira_version(
     )
 
 
-# ---------------------------------------------------------------------------
-# Jira release description
-# ---------------------------------------------------------------------------
+# Jira release metadata serialization.
 
 def build_release_description(
     environment: dict[str, str],
@@ -1011,9 +991,7 @@ def build_release_description(
     )
 
 
-# ---------------------------------------------------------------------------
-# Process Jira project
-# ---------------------------------------------------------------------------
+# Per-project release processing.
 
 def process_project(
     session: requests.Session,
@@ -1096,9 +1074,7 @@ def process_project(
     return "created"
 
 
-# ---------------------------------------------------------------------------
-# Logging
-# ---------------------------------------------------------------------------
+# Release configuration and result logging.
 
 def log_configuration(
     environment: dict[str, str],
@@ -1177,9 +1153,7 @@ def log_configuration(
     )
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
+# Application entry point and orchestration.
 
 def main() -> int:
     """Run the Jira release creation process."""
@@ -1191,9 +1165,7 @@ def main() -> int:
 
     try:
 
-        # ---------------------------------------------------------------
-        # 1. Load GitHub Actions environment
-        # ---------------------------------------------------------------
+        # Load and validate workflow inputs and credentials.
 
         environment = load_environment()
 
@@ -1201,58 +1173,41 @@ def main() -> int:
             "Starting Jira release creation."
         )
 
-        # ---------------------------------------------------------------
-        # 2. Create GitHub API session
-        # ---------------------------------------------------------------
+        # Initialize authenticated GitHub API access.
 
         github_session = create_github_session(
             environment["GITHUB_TOKEN"],
         )
 
-        # ---------------------------------------------------------------
-        # 3. Read GitHub custom properties
-        # ---------------------------------------------------------------
+        # Load repository-level deployment configuration.
 
         properties = get_repository_properties(
             github_session,
             environment["REPOSITORY"],
         )
 
-        # ---------------------------------------------------------------
-        # 4. Read deployment type
-        #
-        # If deployment_type is not configured, get_deployment_type()
-        # automatically returns "direct".
-        #
-        # This preserves all existing repositories.
-        # ---------------------------------------------------------------
+        # Resolve direct or template deployment mode with a direct default.
 
         deployment_type = get_deployment_type(
             properties,
             environment["REPOSITORY"],
         )
 
-        # ---------------------------------------------------------------
-        # 5. Read Jira projects
-        # ---------------------------------------------------------------
+        # Resolve the Jira projects configured for this repository.
 
         projects = get_jira_projects(
             properties,
             environment["REPOSITORY"],
         )
 
-        # ---------------------------------------------------------------
-        # 6. Read workflows
-        # ---------------------------------------------------------------
+        # Resolve environment-to-workflow mappings from custom properties.
 
         workflows = get_workflows(
             properties,
             environment["REPOSITORY"],
         )
 
-        # ---------------------------------------------------------------
-        # 7. Build Jira release description
-        # ---------------------------------------------------------------
+        # Serialize release metadata for the Jira version description.
 
         description = build_release_description(
             environment,
@@ -1260,9 +1215,7 @@ def main() -> int:
             workflows,
         )
 
-        # ---------------------------------------------------------------
-        # 8. Log configuration
-        # ---------------------------------------------------------------
+        # Log the resolved release configuration for auditability.
 
         log_configuration(
             environment,
@@ -1272,9 +1225,7 @@ def main() -> int:
             description,
         )
 
-        # ---------------------------------------------------------------
-        # 9. Create Jira API session
-        # ---------------------------------------------------------------
+        # Initialize authenticated Jira API access.
 
         jira_session = create_jira_session(
             environment["JIRA_EMAIL"],
@@ -1284,9 +1235,7 @@ def main() -> int:
         created: list[str] = []
         existing: list[str] = []
 
-        # ---------------------------------------------------------------
-        # 10. Create release in every configured Jira project
-        # ---------------------------------------------------------------
+        # Create the release in each configured Jira project.
 
         for project in projects:
 
@@ -1306,9 +1255,7 @@ def main() -> int:
 
                 existing.append(project)
 
-        # ---------------------------------------------------------------
-        # 11. Final result
-        # ---------------------------------------------------------------
+        # Report created and already-existing releases.
 
         LOGGER.info(
             "========================================"
