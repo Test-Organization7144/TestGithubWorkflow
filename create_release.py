@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import sys
 from typing import Any
+from urllib.parse import quote, urlsplit
 
 import requests
 from requests import Response
@@ -62,7 +64,7 @@ LOGGER = logging.getLogger(__name__)
 # Environment loading and validation.
 
 def required_env(name: str) -> str:
-    """Return a required environment variable."""
+    """Return a required environment variable without exposing its value."""
 
     value = os.getenv(name, "").strip()
 
@@ -71,7 +73,27 @@ def required_env(name: str) -> str:
             f"Required environment variable '{name}' is missing or empty."
         )
 
+    if any(ord(character) < 32 for character in value):
+        raise ValueError(
+            f"Environment variable '{name}' must not contain control characters."
+        )
+
     return value
+
+
+def validate_metadata_value(name: str, value: str) -> None:
+    """Reject values that would corrupt the pipe-delimited Jira description."""
+
+    if not value.strip():
+        raise ValueError(f"{name} cannot be empty.")
+
+    if "|" in value:
+        raise ValueError(
+            f"{name} must not contain '|', because it is the Jira metadata delimiter."
+        )
+
+    if any(ord(character) < 32 for character in value):
+        raise ValueError(f"{name} must not contain control characters.")
 
 
 def load_environment() -> dict[str, str]:
@@ -93,7 +115,31 @@ def load_environment() -> dict[str, str]:
         for name in names
     }
 
+    # Validate metadata before it is serialized into the Jira version description.
+    for name in ("VERSION", "TAG", "REPOSITORY", "REF"):
+        validate_metadata_value(name, environment[name])
+
+    # Accept fully qualified Git refs but store the branch or tag name consistently.
+    if environment["REF"].startswith("refs/heads/"):
+        environment["REF"] = environment["REF"][len("refs/heads/"):]
+    elif environment["REF"].startswith("refs/tags/"):
+        environment["REF"] = environment["REF"][len("refs/tags/"):]
+
+    if not environment["REF"] or environment["REF"].startswith("-"):
+        raise ValueError("REF must be a valid branch or tag name and must not start with '-'.")
+
+    if any(character.isspace() for character in environment["REF"]):
+        raise ValueError("REF must not contain whitespace. Use a valid branch or tag name.")
+
+    if any(character.isspace() for character in environment["TAG"]):
+        raise ValueError("TAG must not contain whitespace. Use a valid Git tag name.")
+
     environment["JIRA_URL"] = environment["JIRA_URL"].rstrip("/")
+    jira_url = urlsplit(environment["JIRA_URL"])
+    if jira_url.scheme != "https" or not jira_url.netloc or jira_url.query or jira_url.fragment:
+        raise ValueError(
+            "JIRA_URL must be an HTTPS base URL without a query string or fragment."
+        )
 
     return environment
 
@@ -120,7 +166,7 @@ def parse_repository(repository: str) -> tuple[str, str]:
             "GitHub repository cannot be empty."
         )
 
-    parts = repository.split("/", 1)
+    parts = repository.split("/")
 
     if len(parts) != 2:
         raise ValueError(
@@ -242,7 +288,7 @@ def get_repository_properties(
 
     url = (
         f"{GITHUB_API_BASE}"
-        f"/repos/{owner}/{repo}/properties/values"
+        f"/repos/{quote(owner, safe='')}/{quote(repo, safe='')}/properties/values"
     )
 
     operation = (
@@ -302,6 +348,18 @@ def get_repository_properties(
             raise ValueError(
                 f"GitHub repository '{repository}' was not found "
                 "or the token cannot access it."
+            )
+
+        if response.status_code == 429:
+            raise ValueError(
+                "GitHub API rate limit exceeded while reading repository properties. "
+                "Wait and rerun the workflow."
+            )
+
+        if response.status_code >= 500:
+            raise ValueError(
+                f"GitHub API is temporarily unavailable (HTTP {response.status_code}). "
+                "Retry the workflow later."
             )
 
         response.raise_for_status()
@@ -500,6 +558,21 @@ def get_jira_projects(
             f"'{repository}'."
         )
 
+    invalid_projects = [
+        project for project in projects
+        if not re.fullmatch(r"[A-Z][A-Z0-9_]*", project)
+    ]
+    if invalid_projects:
+        raise ValueError(
+            "Invalid Jira project key(s): " + ", ".join(invalid_projects) + ". "
+            "Use uppercase letters, numbers, and underscores, starting with a letter."
+        )
+
+    if len(set(projects)) != len(projects):
+        raise ValueError(
+            f"Duplicate Jira project keys are configured for repository '{repository}'."
+        )
+
     LOGGER.info(
         "Jira projects: %s",
         ", ".join(projects),
@@ -639,18 +712,16 @@ def get_workflows(
             mapping = mapping.strip()
 
             if not mapping:
-                continue
-
-            if "=" not in mapping:
-
-                LOGGER.warning(
-                    "Ignoring invalid workflow mapping '%s' "
-                    "for repository '%s'.",
-                    mapping,
-                    repository,
+                raise ValueError(
+                    f"Empty workflow mapping in custom property '{property_name}' "
+                    f"for repository '{repository}'. Remove extra '|' separators."
                 )
 
-                continue
+            if "=" not in mapping:
+                raise ValueError(
+                    f"Invalid workflow mapping '{mapping}' for repository '{repository}'. "
+                    "Expected environment=workflow.yml."
+                )
 
             environment, workflow = mapping.split(
                 "=",
@@ -661,25 +732,34 @@ def get_workflows(
             workflow = workflow.strip()
 
             if not environment:
-
-                LOGGER.warning(
-                    "Ignoring workflow mapping with empty "
-                    "environment for repository '%s'.",
-                    repository,
+                raise ValueError(
+                    f"Workflow mapping '{mapping}' has an empty environment "
+                    f"for repository '{repository}'."
                 )
-
-                continue
 
             if not workflow:
-
-                LOGGER.warning(
-                    "Ignoring workflow mapping with empty workflow "
-                    "for environment '%s' in repository '%s'.",
-                    environment,
-                    repository,
+                raise ValueError(
+                    f"Workflow mapping for environment '{environment}' has an empty "
+                    f"workflow in repository '{repository}'."
                 )
 
-                continue
+            if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", environment):
+                raise ValueError(
+                    f"Invalid workflow environment '{environment}' for repository "
+                    f"'{repository}'. Use lowercase letters, numbers, '_' or '-'."
+                )
+
+            if "/" in workflow or "\\" in workflow or workflow in {".", ".."}:
+                raise ValueError(
+                    f"Invalid workflow filename '{workflow}' for environment "
+                    f"'{environment}'. Configure a workflow filename such as 'deploy.yml'."
+                )
+
+            if environment in result:
+                raise ValueError(
+                    f"Duplicate workflow environment '{environment}' is configured "
+                    f"for repository '{repository}'."
+                )
 
             result[environment] = workflow
 
@@ -828,16 +908,35 @@ def get_jira_project(
     response = jira_request(
         session,
         "GET",
-        f"{jira_url}/rest/api/3/project/{project_key}",
+        f"{jira_url}/rest/api/3/project/{quote(project_key, safe='')}",
         operation,
     )
 
     if not response.ok:
+        log_api_error(response, operation)
 
-        log_api_error(
-            response,
-            operation,
-        )
+        if response.status_code == 401:
+            raise ValueError(
+                "Jira authentication failed while looking up project "
+                f"'{project_key}'. Check JIRA_EMAIL and JIRA_API_TOKEN."
+            )
+        if response.status_code == 403:
+            raise ValueError(
+                f"Jira denied access to project '{project_key}'. "
+                "Check the Jira account's project permissions."
+            )
+        if response.status_code == 404:
+            raise ValueError(
+                f"Jira project '{project_key}' was not found. "
+                "Check the jira_projects custom property and Jira project key."
+            )
+        if response.status_code == 429:
+            raise ValueError("Jira API rate limit exceeded. Wait and rerun the workflow.")
+        if response.status_code >= 500:
+            raise ValueError(
+                f"Jira API is temporarily unavailable (HTTP {response.status_code}). "
+                "Retry the workflow later."
+            )
 
         response.raise_for_status()
 
@@ -931,10 +1030,30 @@ def create_jira_version(
 
         return "exists", None
 
-    log_api_error(
-        response,
-        operation,
-    )
+    log_api_error(response, operation)
+
+    if response.status_code == 401:
+        raise ValueError(
+            f"Jira authentication failed while creating release '{version}' "
+            f"in project '{project_key}'. Check JIRA_EMAIL and JIRA_API_TOKEN."
+        )
+    if response.status_code == 403:
+        raise ValueError(
+            f"Jira denied permission to create release '{version}' "
+            f"in project '{project_key}'. Check project permissions."
+        )
+    if response.status_code == 404:
+        raise ValueError(
+            f"Jira endpoint or project '{project_key}' was not found while "
+            f"creating release '{version}'. Verify the Jira URL and project access."
+        )
+    if response.status_code == 429:
+        raise ValueError("Jira API rate limit exceeded while creating a release. Retry later.")
+    if response.status_code >= 500:
+        raise ValueError(
+            f"Jira API is temporarily unavailable (HTTP {response.status_code}) "
+            "while creating a release. Retry later."
+        )
 
     response.raise_for_status()
 
@@ -1294,18 +1413,21 @@ def main() -> int:
         )
 
     except requests.HTTPError as exc:
+        # Keep HTTP failures actionable without logging credentials or headers.
+        status_code = exc.response.status_code if exc.response is not None else "unknown"
+        LOGGER.error("API request failed with HTTP status %s: %s", status_code, exc)
 
+    except requests.Timeout:
         LOGGER.error(
-            "API request failed: %s",
-            exc,
+            "An API request timed out after %s seconds. Check connectivity and retry.",
+            REQUEST_TIMEOUT,
         )
+
+    except requests.ConnectionError as exc:
+        LOGGER.error("Could not connect to GitHub or Jira API: %s", exc)
 
     except requests.RequestException as exc:
-
-        LOGGER.error(
-            "API connection failed: %s",
-            exc,
-        )
+        LOGGER.error("API request failed: %s", exc)
 
     except KeyboardInterrupt:
 
