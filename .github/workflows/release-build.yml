@@ -135,6 +135,37 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install "requests>=2.32,<3"
 
+      # Verify that the selected workflow ref contains the expected release script.
+      - name: Diagnose release script version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "========================================"
+          echo "Release script diagnostics"
+          echo "========================================"
+          echo "Repository       : ${GITHUB_REPOSITORY}"
+          echo "Workflow ref     : ${GITHUB_REF}"
+          echo "Workflow SHA     : ${GITHUB_SHA}"
+          echo "Checked-out SHA  : $(git rev-parse HEAD)"
+          echo "Release source   : ${REF}"
+          echo "Python script    : $(realpath create_release.py)"
+
+          echo "Checking for the old error message..."
+          if grep -nF "is not configured." create_release.py; then
+            echo "::warning::The checked-out script may contain the old validation."
+          else
+            echo "The old error text was not found in create_release.py."
+          fi
+
+          echo "Checking required validation..."
+          if grep -nF "Release configuration could not be resolved" create_release.py; then
+            echo "Updated validation text is present."
+          else
+            echo "::error::Updated validation is missing from the checked-out script."
+            exit 1
+          fi
+
       # Read repository custom properties and create the release in each configured Jira project.
       - name: Create Jira releases
         env:
