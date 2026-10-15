@@ -21,7 +21,7 @@ on:
         type: string
         default: "main"
 
-# Grant only the permissions required by this workflow's built-in token.
+# Grant only the permissions required by this workflow.
 permissions:
   contents: read
 
@@ -44,14 +44,14 @@ jobs:
       JIRA_URL: https://ranjith-kumar-a.atlassian.net
 
     steps:
-      # 1. Check out the workflow source without persisting credentials.
+      # 1. Check out the source containing this workflow and the release script.
       - name: Checkout workflow source
         uses: actions/checkout@v4
         with:
           persist-credentials: false
 
-      # 2. Generate a short-lived GitHub App installation token.
-      - name: Generate GitHub App installation token
+      # 2. Generate a short-lived GitHub App installation token for this repository.
+      - name: Generate GitHub App Installation Token
         id: app-token
         uses: actions/create-github-app-token@v2
         with:
@@ -59,8 +59,6 @@ jobs:
           private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
-          permission-contents: read
-          permission-custom-properties: read
 
       # 3. Validate user inputs before making API calls.
       - name: Validate release inputs
@@ -99,7 +97,7 @@ jobs:
 
           echo "================================================"
 
-      # 4. Validate the requested branch or tag using the App token.
+      # 4. Confirm that the requested deployment ref exists in GitHub.
       - name: Validate deployment ref
         shell: bash
         env:
@@ -147,7 +145,7 @@ jobs:
           else
             echo "ERROR: Could not validate '${REF_TO_CHECK}' as a branch or tag."
             echo "Check that the ref exists and the GitHub App has repository access."
-            echo "If the ref exists, verify App permissions and API availability."
+            echo "If the ref exists, verify GitHub App permissions and API availability."
             exit 1
           fi
 
@@ -177,7 +175,7 @@ jobs:
           echo "SUCCESS: Python dependencies installed."
           echo "================================================"
 
-      # 7. Verify the script and Python syntax.
+      # 7. Verify the script, Python syntax, and required environment.
       - name: Diagnose release configuration
         shell: bash
         env:
@@ -240,7 +238,7 @@ jobs:
           echo "Proceeding to Jira release creation."
           echo "================================================"
 
-      # 8. Read repository properties and create Jira releases.
+      # 8. Read repository custom properties and create Jira releases.
       - name: Create Jira releases
         shell: bash
         env:
