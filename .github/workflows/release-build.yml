@@ -21,7 +21,7 @@ on:
         type: string
         default: "main"
 
-# Grant only the permissions required by this workflow.
+# Grant only the permissions required by this workflow's built-in token.
 permissions:
   contents: read
 
@@ -44,13 +44,25 @@ jobs:
       JIRA_URL: https://ranjith-kumar-a.atlassian.net
 
     steps:
-      # 1. Check out the source containing this workflow and the release script.
+      # 1. Check out the workflow source without persisting credentials.
       - name: Checkout workflow source
         uses: actions/checkout@v4
         with:
           persist-credentials: false
 
-      # 2. Validate user inputs before making API calls.
+      # 2. Generate a short-lived GitHub App installation token.
+      - name: Generate GitHub App installation token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.GH_APP_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: read
+          permission-custom-properties: read
+
+      # 3. Validate user inputs before making API calls.
       - name: Validate release inputs
         shell: bash
         run: |
@@ -87,11 +99,11 @@ jobs:
 
           echo "================================================"
 
-      # 3. Confirm that the requested deployment ref exists in GitHub.
+      # 4. Validate the requested branch or tag using the App token.
       - name: Validate deployment ref
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
 
@@ -134,20 +146,20 @@ jobs:
 
           else
             echo "ERROR: Could not validate '${REF_TO_CHECK}' as a branch or tag."
-            echo "Check that the ref exists and the GitHub token has repository access."
-            echo "If the ref exists, verify GitHub API permissions and availability."
+            echo "Check that the ref exists and the GitHub App has repository access."
+            echo "If the ref exists, verify App permissions and API availability."
             exit 1
           fi
 
           echo "================================================"
 
-      # 4. Install the required Python runtime.
+      # 5. Install the required Python runtime.
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      # 5. Install the HTTP dependency required by create_release.py.
+      # 6. Install the HTTP dependency required by create_release.py.
       - name: Install Python dependencies
         shell: bash
         run: |
@@ -165,7 +177,7 @@ jobs:
           echo "SUCCESS: Python dependencies installed."
           echo "================================================"
 
-      # 6. Verify the script, Python syntax, and required environment.
+      # 7. Verify the script and Python syntax.
       - name: Diagnose release configuration
         shell: bash
         env:
@@ -228,13 +240,13 @@ jobs:
           echo "Proceeding to Jira release creation."
           echo "================================================"
 
-      # 7. Read repository custom properties and create Jira releases.
+      # 8. Read repository properties and create Jira releases.
       - name: Create Jira releases
         shell: bash
         env:
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
-          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
 
@@ -260,7 +272,7 @@ jobs:
           fi
 
           if [[ -z "${GITHUB_TOKEN:-}" ]]; then
-            echo "ERROR: GitHub token is unavailable."
+            echo "ERROR: GitHub App installation token is unavailable."
             exit 1
           fi
 
